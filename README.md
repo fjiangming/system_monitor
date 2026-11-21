@@ -121,7 +121,7 @@ docker run -d --name system-monitor --restart unless-stopped \
 docker logs --tail 30 system-monitor
 ```
 
-首次拉取若提示无权限，按[部署文档](deploy/README.md)将 GHCR 包设为公开或登录 GHCR。
+当前镜像支持公开免登录拉取；若以后改为私有，按[部署文档](deploy/README.md)登录 GHCR。
 此方式用于 Linux 面板。host 网络允许网页更改监听端口；不挂载 Docker Socket，容器采集由宿主探针完成。跨机器运行使用 HTTPS。数据目录应始终位于持久挂载范围内。
 
 镜像同时包含宿主机探针程序和 systemd 安装文件，可直接通过 `docker cp` 导出安装。

@@ -120,6 +120,7 @@ jobs:
             type=sha,format=long
             type=ref,event=tag
       - name: Publish verified multi-platform image
+        id: publish
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -132,3 +133,18 @@ jobs:
             type=gha,scope=image-arm64
             type=gha,scope=image-published
           cache-to: type=gha,mode=max,scope=image-published
+      - name: Verify registry manifest
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE@$DIGEST"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw > "$RUNNER_TEMP/published-manifest.json"
+          jq -e '
+            any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64") and
+            any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64")
+          ' "$RUNNER_TEMP/published-manifest.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: published-image-manifest
+          path: ${{ runner.temp }}/published-manifest.json

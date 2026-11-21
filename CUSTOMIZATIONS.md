@@ -103,7 +103,9 @@ publication is included; no production connection or server deployment is run.
   image tests pass. Use the built-in scoped `GITHUB_TOKEN`, OCI source/revision
   labels, `latest` on main only, full-commit tags and explicit version tags.
   Multi-platform builds use Buildx, cross-compilation and shared build caches;
-  concurrent superseded runs for the same ref are cancelled.
+  concurrent superseded runs for the same ref are cancelled. After pushing,
+  inspect the image by registry digest, require both Linux platform entries
+  and retain the actual registry manifest as an Actions artifact.
 - `Dockerfile`: cross-compile for the requested Linux architecture and package
   the existing systemd installer and units alongside the binary. Keep the hub
   non-root with its original persistent path and no Docker Socket access.
@@ -123,3 +125,13 @@ unavailable, so native image checks run on GitHub's Linux runners rather than
 being claimed as local tests. Successful publication is gated on those checks;
 the actual published workflow and registry manifests must be verified before
 delivery.
+
+The first workflow (Actions run 44912701282, commit 05a3a81) passed Linux
+race/real-Docker/browser verification, all three binary builds, both native
+architecture image checks (including agent export and persistent identity
+reuse), and GHCR publication. An anonymous registry request returned HTTP 200
+for `latest`, with both Linux architecture entries and index digest
+`sha256:3467c8703db78b072a3d45befe89826b7b469adc2c113d4d689c3d7fe35a1c30`.
+No package visibility or other GitHub access settings were changed. Registry
+inspection is included in the final workflow so it also verifies pulls of the
+published index rather than relying only on a successful build export.

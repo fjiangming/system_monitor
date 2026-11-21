@@ -21,9 +21,11 @@
 
 ### 首次拉取权限
 
-GHCR 新建包默认是私有的，即使 GitHub 源码仓库是公开的。
-如果希望服务器免登录拉取，在镜像页面的 Package settings 中将包可见性改为 Public。
-这是包的设置，后续构建不需要重复操作。
+本仓库镜像已验证支持公开、免登录拉取，正常部署不需要 GitHub Token。
+
+以下仅适用于以后将包改为私有，或在自己的账号下新建包的情况：GHCR 新建包可能默认
+私有，源码仓库公开不代表包一定公开。需要免登录拉取时，在镜像页面的 Package settings
+中将包可见性改为 Public；这是包的设置，后续构建不需要重复操作。
 
 保持私有时，用有该包读取权限、包含 `read:packages` 的 GitHub Personal Access Token
 （classic）登录。以下命令会交互询问密码，在 Password 中输入 Token：
