@@ -85,3 +85,9 @@ was shorter than the authorized restart deadline. Restart POSTs now use their
 configured command context; read-only Docker requests keep a separate ten-second
 bound. Ambiguous failures still remain unknown and are never automatically
 retried. The real container test verifies the complete stop/restart/health path.
+
+Commit 530ffe4 passed Linux `go test -race -count=1 ./...`, including actual Docker
+restart/health/logs, full agent lifecycle and HTTPS rollback. The remaining CI
+failure was the floating runner upgrading to Ubuntu 26.04, unsupported by the
+pinned Playwright release. All CI jobs now use supported Ubuntu 24.04 explicitly;
+browser and build gates are retained.

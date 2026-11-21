@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +32,7 @@ jobs:
           name: browser-verification
           path: artifacts/browser
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: verify
     timeout-minutes: 15
     strategy:
@@ -57,7 +57,7 @@ jobs:
           name: system-monitor-${{ matrix.target }}
           path: dist/*
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: verify
     timeout-minutes: 15
     steps:
