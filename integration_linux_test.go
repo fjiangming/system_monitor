@@ -179,7 +179,7 @@ func TestRealDockerRestartAndLogs(t *testing.T) {
 	defer cancel()
 	name := "system-monitor-ci-" + strings.ToLower(randomToken()[:10])
 	cmd := exec.CommandContext(ctx, "docker", "run", "-d", "--name", name, "--health-cmd", "exit 0", "--health-interval=1s", "--health-timeout=1s", "alpine:3.21", "sleep", "120")
-	out, e := cmd.CombinedOutput()
+	out, e := cmd.Output()
 	if e != nil {
 		t.Fatalf("docker run: %s %v", out, e)
 	}

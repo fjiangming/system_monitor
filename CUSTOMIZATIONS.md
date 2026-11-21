@@ -72,3 +72,9 @@ responses. The active certificate remains in memory on apply failure and in the
 database across process restarts. `runtime_test.go` verifies an actual trusted
 HTTPS connection, occupied target port, cleared pending certificates, rollback,
 and a second start from the same database.
+
+The subsequent Linux race run passed the core, agent-loop and HTTPS tests, then
+caught a real-Docker fixture issue: Docker's first image pull writes progress to
+stderr, which had been combined with the container ID. The fixture now captures
+stdout alone for the ID. Production collection uses the Docker HTTP API and is
+unaffected by CLI pull output. The real-Docker check remains required in CI.
