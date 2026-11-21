@@ -187,3 +187,10 @@ Compose/Nginx checks are required in both architecture jobs before publication,
 and the actual workflow and published registry revision are verified at delivery.
 The host-agent installation remains native systemd so host resource, systemd and
 backup observations retain their existing semantics and permissions.
+
+The first native Nginx run passed domain/IP/SNI rejection, other virtual hosts,
+HTTPS initialization, Secure cookies and origin checks. Its address-change
+fixture then hit Docker's requirement that a static endpoint IP needs explicit
+IPAM. The test now recreates its own empty network with the same automatically
+selected subnet declared explicitly before reserving the old address. Production
+network creation is unchanged; failed checks prevented image publication.

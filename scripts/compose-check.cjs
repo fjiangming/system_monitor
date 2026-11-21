@@ -96,8 +96,11 @@ async function check() {
     return 200 "other site";
   }\n`);
   docker("network", "create", network);
-  docker("volume", "create", volume);
   const subnet = JSON.parse(docker("network", "inspect", network))[0].IPAM.Config[0].Subnet;
+  // Explicit IPAM permits reserving the retired address to force a DNS change.
+  docker("network", "rm", network);
+  docker("network", "create", "--subnet", subnet, network);
+  docker("volume", "create", volume);
   const rendered = JSON.parse(compose("config", "--format", "json"));
   assert.equal(Object.keys(rendered.services.monitor.ports || {}).length, 0);
   compose("up", "-d", "--wait", "--wait-timeout", "90");
