@@ -24,6 +24,65 @@ type hubAPI struct {
 func newHubAPI(s *Store, apply chan struct{}) http.Handler {
 	return &hubAPI{s: s, apply: apply, slots: make(chan struct{}, 16)}
 }
+
+func (h *hubAPI) authenticate(w http.ResponseWriter, r *http.Request, c Config) {
+	fail := func(status int, e error) { respond(w, status, map[string]string{"error": e.Error()}) }
+	var b struct {
+		Code     string      `json:"code"`
+		Username string      `json:"username"`
+		Password string      `json:"password"`
+		Proxy    *setupProxy `json:"proxy"`
+	}
+	if e := decodeRequest(w, r, &b); e != nil {
+		fail(400, e)
+		return
+	}
+	if b.Proxy != nil {
+		if r.URL.Path != "/api/setup" {
+			fail(400, errors.New("代理信任只能在首次初始化或登录后的服务设置中修改"))
+			return
+		}
+		c.Service.PublicURL = b.Proxy.PublicURL
+		c.Service.TrustedProxies = b.Proxy.TrustedProxies
+		if e := c.Validate(); e != nil {
+			fail(400, e)
+			return
+		}
+		if !withinNetworks(requestPeer(r), c.Service.TrustedProxies) {
+			fail(400, errors.New("受信任代理范围必须包含当前代理 IP"))
+			return
+		}
+		scheme := "http"
+		if secureRequest(r, c) {
+			scheme = "https"
+		}
+		if b.Proxy.PublicURL != scheme+"://"+r.Host {
+			fail(400, errors.New("对外访问地址需与当前访问地址一致，且不含路径"))
+			return
+		}
+	}
+	if !sameOrigin(r, c) {
+		fail(403, errors.New("来源校验失败；首次代理接入请填写受信任代理范围"))
+		return
+	}
+	if r.URL.Path == "/api/setup" {
+		// The one-time code authorizes both account creation and proxy trust atomically.
+		if e := h.s.setup(b.Code, b.Username, b.Password, b.Proxy); e != nil {
+			fail(400, e)
+			return
+		}
+		h.s.Event("", "account", "info", "初始化管理员", "", b.Username)
+	}
+	c, _ = h.s.Config()
+	token, csrf, user, e := h.s.Login(b.Username, b.Password, remoteIP(r, c))
+	if e != nil {
+		fail(401, e)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "monitor_session", Value: token, Path: "/", HttpOnly: true, Secure: secureRequest(r, c), SameSite: http.SameSiteStrictMode, MaxAge: c.Access.SessionHours * 3600})
+	respond(w, 200, map[string]any{"user": user, "csrf": csrf})
+}
+
 func respond(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -91,46 +150,22 @@ func (h *hubAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(405, errors.New("仅接受 POST"))
 			return
 		}
-		if origin := r.Header.Get("Origin"); origin != "" {
-			scheme := "http"
-			if secureRequest(r, c) {
-				scheme = "https"
-			}
-			expected := scheme + "://" + r.Host
-			if origin != expected {
-				fail(403, errors.New("来源校验失败"))
-				return
-			}
+		if path == "/api/setup" || path == "/api/login" {
+			h.authenticate(w, r, c)
+			return
+		}
+		if !sameOrigin(r, c) {
+			fail(403, errors.New("来源校验失败"))
+			return
 		}
 	}
 	if path == "/api/bootstrap" && r.Method == "GET" {
-		respond(w, 200, map[string]any{"setup": h.s.NeedsSetup(), "user": user, "csrf": csrf, "siteName": c.Service.SiteName, "version": version})
-		return
-	}
-	if (path == "/api/setup" || path == "/api/login") && r.Method == "POST" {
-		var b struct {
-			Code     string `json:"code"`
-			Username string `json:"username"`
-			Password string `json:"password"`
+		body := map[string]any{"setup": h.s.NeedsSetup(), "user": user, "csrf": csrf, "siteName": c.Service.SiteName, "version": version}
+		if h.s.NeedsSetup() {
+			body["proxyPeer"] = requestPeer(r)
+			body["proxyNeedsTrust"] = r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "https" && !secureRequest(r, c)
 		}
-		if e := decodeRequest(w, r, &b); e != nil {
-			bad(e)
-			return
-		}
-		if path == "/api/setup" {
-			if e := h.s.Setup(b.Code, b.Username, b.Password); e != nil {
-				bad(e)
-				return
-			}
-			h.s.Event("", "account", "info", "初始化管理员", "", b.Username)
-		}
-		token, newCSRF, u, e := h.s.Login(b.Username, b.Password, remoteIP(r, c))
-		if e != nil {
-			fail(401, e)
-			return
-		}
-		http.SetCookie(w, &http.Cookie{Name: "monitor_session", Value: token, Path: "/", HttpOnly: true, Secure: secureRequest(r, c), SameSite: http.SameSiteStrictMode, MaxAge: c.Access.SessionHours * 3600})
-		respond(w, 200, map[string]any{"user": u, "csrf": newCSRF})
+		respond(w, 200, body)
 		return
 	}
 	if path == "/api/public" && r.Method == "GET" && c.Service.PublicStatus {

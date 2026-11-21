@@ -158,6 +158,14 @@ async function check() {
       errors.push(m.text());
   });
   await page.goto(base);
+  await page.locator(".auth-proxy summary").click();
+  await page.locator('[name="trustedProxies"]').fill("127.0.0.1");
+  assert.equal(await page.locator('[name="publicURL"]').inputValue(), base);
+  await page.screenshot({path: path.join(artifacts, "setup-proxy-desktop.png"), fullPage: true});
+  await page.setViewportSize({width: 320, height: 800});
+  await overflow(page);
+  await page.screenshot({path: path.join(artifacts, "setup-proxy-mobile.png"), fullPage: true});
+  await page.setViewportSize({width: 1440, height: 1000});
   await page.locator("[name=code]").fill(code);
   await page.locator("[name=username]").fill("admin");
   await page.locator("[name=password]").fill(password);

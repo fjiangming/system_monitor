@@ -1,0 +1,42 @@
+name: system-monitor
+
+services:
+  monitor:
+    image: ghcr.io/fjiangming/system_monitor:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    volumes:
+      - monitor-data:/var/lib/system-monitor
+    networks:
+      monitor-proxy:
+        aliases:
+          - system-monitor
+    healthcheck:
+      test: [CMD, wget, -q, -T, '3', -O, /dev/null, 'http://127.0.0.1:18080/healthz']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: '3'
+
+volumes:
+  monitor-data:
+    external: true
+    name: system-monitor-data
+
+networks:
+  monitor-proxy:
+    external: true
+    name: system-monitor-proxy

@@ -1,8 +1,12 @@
-# 从 GitHub 镜像部署
+# Docker Compose + 现有 Nginx 容器
 
 服务器只需要 Linux 和 Docker Engine，不需要 Git、Go、Node.js 或项目源码。
-下面的命令在服务器的 root Shell 中运行；普通账号先执行 `sudo -i`。
-不使用 Compose、`.env` 或运行参数配置文件，日常设置仍在网页和内部数据库中管理。
+需要 Docker Compose v2.20 或更新版本。下面的命令在服务器的 root Shell 中运行；
+普通账号先执行 `sudo -i`。Compose 和 Nginx 文件只管理容器、网络、域名和证书入口；
+监控规则、代理信任、通知、账号等日常参数仍通过网页保存到内部数据库，不使用 `.env`。
+
+访问路径：浏览器 / 探针 → 域名 HTTPS → 现有 Nginx 容器 → 专用 Docker 网络 → 面板。
+面板没有宿主机端口映射，也不使用 host 网络，公网 IP 的 `18080` 端口不提供面板访问。
 
 ## 镜像如何生成
 
@@ -11,7 +15,7 @@
 - 推送 `v*` 标签，例如 `v0.2.0`：发布同名镜像标签，不改变 `latest`。
 - GitHub Actions 支持手动运行；只有 `main` 或 `v*` 标签会发布。
 - Pull Request 和其他分支只验证，不发布。测试、三平台编译、AMD64 和 ARM64
-  原生镜像测试全部通过后才执行发布。
+  原生镜像与 Compose/Nginx HTTPS 集成测试全部通过后才执行发布。
 
 一个标签包含 `linux/amd64`、`linux/arm64` 两种架构，Docker 自动选择。
 发布使用 Actions 自带的 `GITHUB_TOKEN`，不需要另建镜像推送密钥，也不连接服务器。
@@ -37,38 +41,134 @@ docker login ghcr.io -u fjiangming
 不要把 Token 写入仓库、网页配置或镜像。GitHub Actions 内置 Token 仅在构建期间使用，
 不能拿来作为服务器的长期登录凭据。若拉取出现 `denied`，先检查上述包权限与登录状态。
 
-## 首次启动面板
+## 准备部署文件
 
-确认对应提交的 Actions 已成功，并安装好 Docker 后执行：
+镜像已包含 Compose、Nginx 示例和探针安装文件。服务器只拉镜像并导出部署文件：
 
 ```sh
 docker pull ghcr.io/fjiangming/system_monitor:latest
-docker volume create system-monitor-data
-docker run -d --name system-monitor \
-  --restart unless-stopped \
-  --network host \
-  --log-driver local \
-  --mount type=volume,src=system-monitor-data,dst=/var/lib/system-monitor \
-  ghcr.io/fjiangming/system_monitor:latest
-docker logs --tail 30 system-monitor
+mkdir -p /opt/system-monitor
+monitor_export=$(docker create ghcr.io/fjiangming/system_monitor:latest)
+docker cp "$monitor_export:/usr/local/share/system-monitor/deploy/." /opt/system-monitor/
+docker rm -v "$monitor_export"
+cd /opt/system-monitor
 ```
 
-访问 `http://服务器IP:18080`，使用日志中的首次初始化码创建管理员账号。
-在网页“服务设置”填写对外访问地址，并配置 HTTPS 或现有反向代理。
-管理入口的防火墙权限按实际访问范围开放。
+后续更新镜像无需再次导出或覆盖自己调整过的 Compose/Nginx 文件。
 
-使用 host 网络，所以没有 `-p` 端口映射；网页更改监听端口后会直接使用新端口，
-需同时调整防火墙或代理。面板以 UID/GID `10001:10001` 运行，不挂载 Docker Socket。
-`local` 日志驱动自动轮转容器输出；应用自身的日志保留在网页设置。
+## 创建专用网络和数据卷
+
+```sh
+docker network inspect system-monitor-proxy >/dev/null 2>&1 || docker network create system-monitor-proxy
+docker volume create system-monitor-data
+docker network inspect system-monitor-proxy --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'
+```
+
+记录最后输出的专用网络 CIDR，例如 `172.23.0.0/16`，初始化页面会用到。
+只把面板和负责反向代理的 Nginx 加入此网络，避免信任其他业务容器。
+
+## 将现有 Nginx 接入网络
+
+以下 `nginx` 替换为已有 Nginx 的实际容器名。可立即连接，不必为此重启 Nginx：
+
+```sh
+docker network connect system-monitor-proxy nginx
+```
+
+如果提示已经连接，无需重复操作。为保证 Nginx 重建后仍有此网络，在 **Nginx 自己的**
+Compose 文件中追加以下网络，保留原有服务、挂载和全部网络：
+
+```yaml
+services:
+  nginx:
+    networks:
+      - default          # 这里保留你原有的所有网络
+      - monitor-proxy
+
+networks:
+  monitor-proxy:
+    external: true
+    name: system-monitor-proxy
+```
+
+Nginx 必须使用桥接网络；host 网络容器不能加入此网络。Compose 中的网络名可以不同，
+但外部网络的 `name` 必须一致。面板在该网络上的固定 DNS 别名是 `system-monitor`。
+
+## 配置域名、HTTPS 和拒绝 IP 访问
+
+1. 将域名的 A/AAAA 记录指向服务器，准备与该域名匹配的有效 TLS 证书。
+2. 将 `nginx-monitor.conf.example` 中的 `monitor.example.com` 替换为实际域名，
+   证书路径替换为 **Nginx 容器内** 的证书路径。将文件放入现有 Nginx 的 `conf.d` 挂载目录，
+   文件名使用 `monitor.conf`。
+3. 参照 `nginx-default-deny.conf.example` 设置默认虚拟主机：HTTP 返回 444，HTTPS
+   拒绝握手。已有 `default_server` 时修改或合并原默认块，不要重复定义。
+   保留其他业务域名对应的 `server` 块。`ssl_reject_handshake` 需要 Nginx 1.19.4+。
+4. 检查后重载 Nginx：
+
+```sh
+docker exec nginx nginx -t
+docker exec nginx nginx -s reload
+```
+
+不清楚配置的宿主机挂载目录时，先查看：
+
+```sh
+docker inspect nginx --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+```
+
+域名 HTTP 请求会跳转 HTTPS。IP、未知 Host 和不匹配的 TLS SNI 不会进入监控面板。
+Nginx 使用 Docker DNS 动态解析后端，面板更新后即使容器 IP 改变也会重新连接。
+代理会覆盖客户端提交的转发头；不要把示例改成信任任意客户端的 `X-Forwarded-For`。
+
+## 启动和初始化面板
+
+```sh
+cd /opt/system-monitor
+docker compose config --quiet
+docker compose up -d --wait
+docker compose logs --tail 30 monitor
+```
+
+访问 `https://你的监控域名`。填写日志中的初始化码、管理员账号和密码；在“反向代理设置”
+中确认对外地址，并将受信任代理范围改为上面记录的 **专用网络 CIDR**。
+系统会先验证一次性初始化码，再将管理员和代理信任一起保存到数据库。
+默认显示当前 Nginx 的单个 IP，也可以直接接入；使用专用网络 CIDR 可避免 Nginx
+重建更换 IP 后需要重新调整信任。
+
+初次创建的会话即使用 Secure Cookie，支持正常登录和来源校验。之后代理信任仍在
+“系统设置 → 服务设置”修改。外部 HTTPS 由 Nginx 终止，面板保持默认的“反向代理”模式。
+
+Compose 不包含 `ports`，不挂载 Docker Socket；面板以 UID/GID `10001:10001` 运行，
+只读根文件系统、移除 Linux capabilities，业务数据只写入数据卷，临时文件使用限额内存盘。
+日志自动轮转。
+容器内部监听保持 `0.0.0.0:18080`，**不能改成 `127.0.0.1`**，否则另一个容器中的
+Nginx 无法连接。外部访问端口由 Nginx 管理，不需要在网页改内部监听端口。
 
 数据库、配对加密密钥、备份和内部迁移记录都保存在命名卷 `system-monitor-data`。
-更新时始终挂载同一个卷。不要执行 `docker volume rm system-monitor-data`。
+数据卷声明为 external，Compose 重建或 `down` 不会删除它。不要执行
+`docker volume rm system-monitor-data`。
 容器中的初始数据目录是 `/var/lib/system-monitor/data`；如需在网页迁移数据目录，
 目标仍应位于 `/var/lib/system-monitor/` 挂载范围内，例如
 `/var/lib/system-monitor/data-v2`，且不能已存在或位于当前数据目录内。
 这样重建容器后原始重定位记录与新数据仍在同一个卷中。
 
 建议面板在另一台小服务器运行。面板和业务同机时，整机断电或失联期间不能自行发送告警。
+
+## 从旧 docker run 方式迁移
+
+如果已按旧文档使用 host 网络部署，先创建上述网络，在原网页设置里将受信任代理范围
+加入此网络 CIDR、对外地址改为 HTTPS 域名，并保留内部监听 `0.0.0.0:18080` 和代理模式。
+创建一次成功备份，再停止并移除旧容器，使用 Compose 启动：
+
+```sh
+docker stop --time 30 system-monitor
+docker rm system-monitor
+cd /opt/system-monitor
+docker compose up -d --wait
+```
+
+Compose 显式使用同一个 `system-monitor-data` 卷，不会重新初始化账号或探针。
+旧数据里的内置 HTTPS、其他端口或其他监听地址也会保留，迁移前需在网页调整并应用。
 
 ## 安装被监控主机的探针
 
@@ -113,27 +213,20 @@ journalctl -u system-monitor-agent.service -n 30 --no-pager
 确认要更新的 Actions 成功后执行：
 
 ```sh
-# 先完成下载；下载失败时现有服务继续运行。
-docker pull ghcr.io/fjiangming/system_monitor:latest
-
-# 保留当前运行版本，供需要时回退。
-docker image tag "$(docker inspect --format '{{.Image}}' system-monitor)" system-monitor:rollback
-docker stop --time 30 system-monitor
-docker rm system-monitor
-docker run -d --name system-monitor \
-  --restart unless-stopped \
-  --network host \
-  --log-driver local \
-  --mount type=volume,src=system-monitor-data,dst=/var/lib/system-monitor \
-  ghcr.io/fjiangming/system_monitor:latest
-docker logs --tail 30 system-monitor
+cd /opt/system-monitor
+docker image tag "$(docker inspect --format '{{.Image}}' "$(docker compose ps -q monitor)")" system-monitor:rollback
+docker compose pull
+docker compose up -d --wait
+docker compose logs --tail 30 monitor
 ```
 
-`docker restart` 只重启原容器，不会切换到新下载的镜像，更新必须重建容器。
+先完成下载；下载失败时现有服务继续运行。`docker compose up -d` 自动重建镜像变化的
+面板容器，不重建现有 Nginx，Docker DNS 自动刷新。单独 `restart` 不会切换到新镜像。
 管理员、探针接入关系、通知凭据和网页设置随数据卷保留。
 网页可用后检查服务器在线状态、告警和通知。
 
-如需固定版本，把以上命令中的 `:latest` 换为 `:v0.2.0` 或对应 `:sha-完整提交号`。
+如需固定版本，修改 `compose.yaml` 的 `image`，选择已发布的 `:v版本号` 或
+`:sha-完整提交号` 标签。
 要精确固定镜像内容，可使用 Actions 发布摘要中的
 `ghcr.io/fjiangming/system_monitor@sha256:镜像摘要`。
 
@@ -160,8 +253,8 @@ journalctl -u system-monitor-agent.service -n 30 --no-pager
 
 ## 回退与备份
 
-保留了上述 `system-monitor:rollback` 镜像时，可停止并删除当前面板容器，
-使用相同的 `docker run` 参数，将镜像换成 `system-monitor:rollback` 后启动。
+保留了上述 `system-monitor:rollback` 镜像时，将 Compose 中的 `image` 临时改为
+`system-monitor:rollback`，执行 `docker compose up -d --pull never --wait`。
 不要在完成验证前清理该回退镜像。代码降级能否直接读取数据取决于版本间的数据库兼容性；
 如升级涉及不兼容迁移，应同时恢复升级前的配对备份。
 
@@ -169,7 +262,7 @@ journalctl -u system-monitor-agent.service -n 30 --no-pager
 
 ```sh
 # 将末尾的目录名替换为网页显示的成功备份目录；迁移过数据目录时同步替换路径。
-docker cp system-monitor:/var/lib/system-monitor/data/backups/manual-实际目录 ./monitor-backup
+docker compose cp monitor:/var/lib/system-monitor/data/backups/manual-实际目录 ./monitor-backup
 ```
 
 不要直接复制正在写入的 `monitor.db` 作为一致备份，也不要把不同批次的密钥和数据库混合。
@@ -179,11 +272,14 @@ docker cp system-monitor:/var/lib/system-monitor/data/backups/manual-实际目�
 忘记密码时，在停止面板后通过相同卷运行本机恢复命令，再启动原面板：
 
 ```sh
-docker stop --time 30 system-monitor
-docker run --rm \
-  --mount type=volume,src=system-monitor-data,dst=/var/lib/system-monitor \
-  "$(docker inspect --format '{{.Image}}' system-monitor)" recover-access
-docker start system-monitor
+docker compose stop monitor
+docker compose run --rm --no-deps monitor recover-access
+docker compose up -d --wait
 ```
 
 恢复命令应使用与当前面板相同版本的镜像。记录控制台显示的临时密码，登录后在网页修改。
+
+如果是代理范围误设导致无法登录，可先停止常驻面板，临时执行
+`docker compose run --rm --no-deps -p 127.0.0.1:18080:18080 monitor serve`，
+再通过 SSH 本地端口转发访问网页，修正服务设置。临时入口只绑定服务器回环地址。
+操作完成后停止临时容器，再执行正常的 `docker compose up -d --wait`；不编辑内部数据库。

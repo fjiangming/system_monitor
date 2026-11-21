@@ -691,6 +691,13 @@ code {
   border: 0;
   background: none;
 }
+.auth-proxy summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+.auth-proxy label {
+  margin-top: 14px;
+}
 .loading {
   padding: 15vh 20px;
   text-align: center;

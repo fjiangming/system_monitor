@@ -32,6 +32,8 @@ const app = {
   csrf: "",
   user: null,
   setup: false,
+  proxyPeer: "",
+  proxyNeedsTrust: false,
   settings: null,
   draft: null,
   server: null,
@@ -160,6 +162,8 @@ async function bootstrap() {
   const b = await api("bootstrap");
   app.user = b.user?.id ? b.user : null;
   app.setup = b.setup;
+  app.proxyPeer = b.proxyPeer || "";
+  app.proxyNeedsTrust = b.proxyNeedsTrust || false;
   app.csrf = b.csrf;
   app.siteName = b.siteName;
   app.version = b.version;
@@ -216,8 +220,11 @@ function render() {
   }
 }
 function renderAuth() {
+  const proxyFields = app.setup
+    ? `<details class="auth-proxy" ${app.proxyNeedsTrust ? "open" : ""}><summary>反向代理设置</summary><label><span>对外访问地址</span><input name="publicURL" type="url" value="${esc(location.origin)}" autocomplete="url"></label><label><span>受信任代理 IP / CIDR</span><textarea name="trustedProxies" rows="2" placeholder="${esc(app.proxyPeer)}">${esc(app.proxyNeedsTrust ? app.proxyPeer : "")}</textarea></label></details>`
+    : "";
   $("#app").innerHTML =
-    `<main class="auth"><div class="brand"><span class="logo">${icon("activity")}</span>${esc(app.siteName || "轻巡")}</div><h1>${app.setup ? "创建管理员" : "登录监控台"}</h1><p class="sub">${app.setup ? "首次初始化" : "系统运行与容器状态"}</p><div id="notice" class="notice ${app.noticeError ? "error" : ""}" role="status" aria-live="polite">${esc(app.notice)}</div><form id="auth-form">${app.setup ? '<label><span>初始化码</span><input name="code" type="password" required autocomplete="off"></label>' : ""}<label><span>用户名</span><input name="username" required minlength="3" maxlength="64" autocomplete="username"></label><label><span>密码${app.setup ? " · 至少 12 字节" : ""}</span><input name="password" type="password" required ${app.setup ? 'minlength="12"' : ""} maxlength="256" autocomplete="${app.setup ? "new-password" : "current-password"}"></label><button class="primary" type="submit">${icon(app.setup ? "shield-check" : "log-in")}${app.setup ? "完成初始化" : "登录"}</button></form></main>`;
+    `<main class="auth"><div class="brand"><span class="logo">${icon("activity")}</span>${esc(app.siteName || "轻巡")}</div><h1>${app.setup ? "创建管理员" : "登录监控台"}</h1><p class="sub">${app.setup ? "首次初始化" : "系统运行与容器状态"}</p><div id="notice" class="notice ${app.noticeError ? "error" : ""}" role="status" aria-live="polite">${esc(app.notice)}</div><form id="auth-form">${app.setup ? '<label><span>初始化码</span><input name="code" type="password" required autocomplete="off"></label>' : ""}<label><span>用户名</span><input name="username" required minlength="3" maxlength="64" autocomplete="username"></label><label><span>密码${app.setup ? " · 至少 12 字节" : ""}</span><input name="password" type="password" required ${app.setup ? 'minlength="12"' : ""} maxlength="256" autocomplete="${app.setup ? "new-password" : "current-password"}"></label>${proxyFields}<button class="primary" type="submit">${icon(app.setup ? "shield-check" : "log-in")}${app.setup ? "完成初始化" : "登录"}</button></form></main>`;
   icons();
 }
 function metric(name, value, display) {
@@ -876,6 +883,16 @@ document.addEventListener("submit", (e) => {
   (async () => {
     if (form.id === "auth-form") {
       const values = Object.fromEntries(new FormData(form));
+      if (app.setup) {
+        if (values.trustedProxies.trim()) {
+          values.proxy = {
+            publicURL: values.publicURL.trim(),
+            trustedProxies: values.trustedProxies.trim(),
+          };
+        }
+        delete values.publicURL;
+        delete values.trustedProxies;
+      }
       const b = await api(app.setup ? "setup" : "login", values);
       app.user = b.user;
       app.csrf = b.csrf;

@@ -3,7 +3,7 @@
   "private": true,
   "description": "Development-only browser verification; Node is not required to run the service",
   "scripts": {
-    "check": "node --check web/app.js && node --check scripts/browser-check.cjs",
+    "check": "node --check web/app.js && node --check scripts/browser-check.cjs && node --check scripts/compose-check.cjs",
     "test:browser": "node scripts/browser-check.cjs"
   },
   "devDependencies": {

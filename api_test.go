@@ -134,6 +134,80 @@ func TestProxyTrustAndLoginLockout(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestHTTPSProxySetupRequiresCodeAndPreservesOriginChecks(t *testing.T) {
+	s := testStore(t)
+	h := newHubAPI(s, make(chan struct{}, 1))
+	before, revision := s.Config()
+	code := s.SetupCode()
+	proxy := setupProxy{"https://monitor.example.com", "172.25.0.0/24"}
+	request := func(endpoint, peer, origin string, body any) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest("POST", "http://monitor.example.com"+endpoint, strings.NewReader(encode(body)))
+		r.RemoteAddr = peer + ":1234"
+		r.Header.Set("Origin", origin)
+		r.Header.Set("X-Forwarded-Proto", "https")
+		r.Header.Set("X-Forwarded-For", "198.51.100.8")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	for _, test := range []struct {
+		name, code, origin string
+		proxy              *setupProxy
+		status             int
+	}{
+		{"untrusted forwarding", code, proxy.PublicURL, nil, 403},
+		{"wrong code", "invalid", proxy.PublicURL, &proxy, 400},
+		{"wrong origin", code, "https://evil.example", &proxy, 403},
+		{"wrong public URL", code, proxy.PublicURL, &setupProxy{"https://evil.example", proxy.TrustedProxies}, 400},
+		{"missing peer", code, proxy.PublicURL, &setupProxy{proxy.PublicURL, "192.0.2.0/24"}, 400},
+		{"invalid range", code, proxy.PublicURL, &setupProxy{proxy.PublicURL, "invalid"}, 400},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := map[string]any{"code": test.code, "username": "admin", "password": "proxy-setup-test-password", "proxy": test.proxy}
+			w := request("/api/setup", "172.25.0.3", test.origin, body)
+			if w.Code != test.status {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			after, nextRevision := s.Config()
+			if !s.NeedsSetup() || encode(before) != encode(after) || revision != nextRevision || s.SetupCode() != code {
+				t.Fatal("rejected setup changed account, proxy trust, revision or setup code")
+			}
+		})
+	}
+	body := map[string]any{"code": code, "username": "admin", "password": "proxy-setup-test-password", "proxy": &proxy}
+	w := request("/api/setup", "172.25.0.3", proxy.PublicURL, body)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatal("HTTPS setup did not issue a secure session cookie")
+	}
+	after, nextRevision := s.Config()
+	if s.NeedsSetup() || after.Service.PublicURL != proxy.PublicURL || after.Service.TrustedProxies != proxy.TrustedProxies || nextRevision != revision+1 {
+		t.Fatal("proxy settings were not committed with the account")
+	}
+	proxy.TrustedProxies = "172.25.0.0/16"
+	if w = request("/api/setup", "172.25.0.3", proxy.PublicURL, body); w.Code != 400 {
+		t.Fatal("replayed setup accepted", w.Code)
+	}
+	if w = request("/api/login", "172.25.0.3", proxy.PublicURL, body); w.Code != 400 {
+		t.Fatal("login changed proxy trust", w.Code)
+	}
+	persisted, persistedRevision := s.Config()
+	if encode(persisted) != encode(after) || persistedRevision != nextRevision {
+		t.Fatal("replayed initialization or login changed saved trust")
+	}
+	delete(body, "proxy")
+	if w = request("/api/login", "203.0.113.4", proxy.PublicURL, body); w.Code != 403 {
+		t.Fatal("untrusted peer spoofed HTTPS", w.Code)
+	}
+	if w = request("/api/login", "172.25.0.3", proxy.PublicURL, body); w.Code != 200 || !w.Result().Cookies()[0].Secure {
+		t.Fatal("HTTPS login failed after initialization", w.Code, w.Body.String())
+	}
+}
 func TestAgentHTTPIsolationAndOneTimeEnrollment(t *testing.T) {
 	s := testStore(t)
 	id := testServer(t, s)

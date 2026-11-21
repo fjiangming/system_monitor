@@ -35,6 +35,15 @@ func usernameValid(name string) bool {
 	return len(name) >= 3 && len(name) <= 64 && strings.TrimSpace(name) == name && !strings.ContainsAny(name, "\r\n\x00")
 }
 func (s *Store) Setup(code, name, password string) error {
+	return s.setup(code, name, password, nil)
+}
+
+type setupProxy struct {
+	PublicURL      string `json:"publicURL"`
+	TrustedProxies string `json:"trustedProxies"`
+}
+
+func (s *Store) setup(code, name, password string, proxy *setupProxy) error {
 	if !usernameValid(name) {
 		return errors.New("用户名需为 3–64 字节")
 	}
@@ -47,6 +56,14 @@ func (s *Store) Setup(code, name, password string) error {
 	if !s.NeedsSetup() || !constantEqual(s.Secret("bootstrap:setup"), code) || code == "" {
 		return errors.New("初始化已完成或初始化码错误")
 	}
+	c, _ := s.Config()
+	if proxy != nil {
+		c.Service.PublicURL = proxy.PublicURL
+		c.Service.TrustedProxies = proxy.TrustedProxies
+		if e := c.Validate(); e != nil {
+			return e
+		}
+	}
 	tx, e := s.DB.Begin()
 	if e != nil {
 		return e
@@ -57,6 +74,14 @@ func (s *Store) Setup(code, name, password string) error {
 	}
 	if _, e = tx.Exec(`DELETE FROM secrets WHERE k='bootstrap:setup'`); e != nil {
 		return e
+	}
+	if proxy != nil {
+		if _, e = tx.Exec(`UPDATE meta SET v=? WHERE k='config'`, encode(c)); e != nil {
+			return e
+		}
+		if _, e = tx.Exec(`UPDATE meta SET v=CAST(v AS INTEGER)+1 WHERE k='revision'`); e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
 }
@@ -196,6 +221,26 @@ func remoteIP(r *http.Request, c Config) string {
 func secureRequest(r *http.Request, c Config) bool {
 	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 	return r.TLS != nil || (withinNetworks(ip, c.Service.TrustedProxies) && r.Header.Get("X-Forwarded-Proto") == "https")
+}
+
+func requestPeer(r *http.Request) string {
+	ip, _, e := net.SplitHostPort(r.RemoteAddr)
+	if e != nil {
+		return r.RemoteAddr
+	}
+	return ip
+}
+
+func sameOrigin(r *http.Request, c Config) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	scheme := "http"
+	if secureRequest(r, c) {
+		scheme = "https"
+	}
+	return origin == scheme+"://"+r.Host
 }
 func (s *Store) RecoverAccess() (string, string, error) {
 	password := randomToken()

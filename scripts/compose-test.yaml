@@ -1,0 +1,11 @@
+services:
+  monitor:
+    image: ${MONITOR_TEST_IMAGE:-system-monitor:ci}
+
+volumes:
+  monitor-data:
+    name: ${MONITOR_TEST_VOLUME:?}
+
+networks:
+  monitor-proxy:
+    name: ${MONITOR_TEST_NETWORK:?}

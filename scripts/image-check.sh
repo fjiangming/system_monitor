@@ -41,7 +41,7 @@ docker cp "$container:/usr/local/bin/system-monitor" "$package_dir/system-monito
 docker cp "$container:/usr/local/share/system-monitor/deploy" "$package_dir/deploy"
 "$package_dir/system-monitor" version
 sh -n "$package_dir/deploy/install.sh"
-for asset in install.sh system-monitor.service system-monitor-agent.service; do
+for asset in install.sh system-monitor.service system-monitor-agent.service compose.yaml nginx-monitor.conf.example nginx-default-deny.conf.example README.md; do
     cmp "deploy/$asset" "$package_dir/deploy/$asset"
 done
 

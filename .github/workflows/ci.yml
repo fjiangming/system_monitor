@@ -85,6 +85,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
       - name: Verify image, persistent storage and host agent package
         run: sh scripts/image-check.sh system-monitor:ci
+      - name: Verify Compose isolation and Nginx HTTPS access
+        run: node scripts/compose-check.cjs system-monitor:ci
   publish:
     if: >-
       github.event_name != 'pull_request' &&

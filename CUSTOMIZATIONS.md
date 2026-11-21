@@ -135,3 +135,55 @@ for `latest`, with both Linux architecture entries and index digest
 No package visibility or other GitHub access settings were changed. Registry
 inspection is included in the final workflow so it also verifies pulls of the
 published index rather than relying only on a successful build export.
+
+## 2026-11-21: Compose behind an existing Nginx container
+
+Authorized scope: optimize container deployment with Docker Compose, make the
+panel available through a domain and Nginx rather than the server IP, and retain
+source-free image deployment. The user confirmed an existing Nginx container.
+No server is connected or deployed by this change.
+
+- `deploy/compose.yaml`: an independent hub service with no host port mapping or
+  host networking, a dedicated external proxy network and stable DNS alias, the
+  existing external data volume, health checks, graceful shutdown, bounded logs,
+  a read-only root filesystem, bounded temporary memory storage, dropped
+  capabilities and no Docker Socket.
+- `deploy/nginx-monitor.conf.example`, `deploy/nginx-default-deny.conf.example`:
+  domain HTTPS proxying, HTTP redirection, IP/unknown-host/SNI rejection, Docker
+  DNS re-resolution after hub replacement, and replacement of client-supplied
+  forwarding headers. Existing named business virtual hosts are preserved;
+  default-deny blocks must be merged with any existing default server.
+- `auth.go`, `api.go`: first-run proxy configuration is authorized by the same
+  one-use setup code and committed atomically with the administrator. Validate
+  the proxy network, current peer, public origin and cross-origin request before
+  use; rejected or replayed setup and normal login cannot change proxy trust.
+  Existing installations keep their defaults and saved settings. Normal origin
+  and CSRF checks remain enforced; proxy HTTPS sessions receive Secure cookies.
+- `web/app.js`, `web/app.css`: optional first-run public URL and trusted-proxy
+  fields, with an observed peer hint for an untrusted HTTPS reverse proxy.
+  Daily configuration remains in the existing web settings and database.
+- `Dockerfile`, `scripts/image-check.sh`: include and verify the complete deploy
+  package in each image so the server exports deployment files without source.
+- `api_test.go`, `scripts/browser-check.cjs`, `package.json`: verify atomic
+  first-run authorization and rejection cases, trusted HTTPS cookies/login,
+  initialization form behavior and narrow-screen layout, plus syntax checks.
+- `scripts/compose-check.cjs`, `scripts/compose-test.yaml`,
+  `.github/workflows/ci.yml`: native AMD64/ARM64 integration uses the actual
+  Compose manifest, hub image and Nginx, with an isolated TLS certificate,
+  network and volume. Check private ports, HTTPS setup/login, header forgery,
+  origin protection, IP/Host/SNI rejection, other virtual-host access, persisted
+  sessions and automatic DNS recovery after forcing a different container IP.
+- `README.md`, `deploy/README.md`: source-free export, joining an existing proxy,
+  domain/certificate/default-host setup, UI proxy trust, migration from the old
+  host-network container, Compose updates/rollback/recovery and persistent data.
+  Compose/Nginx configuration is deployment infrastructure explicitly requested
+  here; application operator settings remain managed through the UI/database.
+
+Local Go vet/tests, JavaScript syntax, Actionlint, production/test Compose
+configuration and whitespace checks passed. Browser acceptance passed all prior
+flows plus proxy setup and 320 px initialization layout; desktop/mobile setup
+screenshots were inspected. The local Docker daemon remains unavailable. Native
+Compose/Nginx checks are required in both architecture jobs before publication,
+and the actual workflow and published registry revision are verified at delivery.
+The host-agent installation remains native systemd so host resource, systemd and
+backup observations retain their existing semantics and permissions.

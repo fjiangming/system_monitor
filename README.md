@@ -1,6 +1,6 @@
 # 轻巡 · 独立系统监控
 
-轻量、自托管的服务器与容器监控服务。Go 单程序，内置网页和 SQLite；手机浏览器直接查看。运行时不需要 Node.js、外部数据库，也不需要维护 YAML、JSON 或 `.env` 配置文件。
+轻量、自托管的服务器与容器监控服务。Go 单程序，内置网页和 SQLite；手机浏览器直接查看。运行时不需要 Node.js 或外部数据库，监控参数全部在网页和内部数据库中管理。Compose 与 Nginx 文件只负责部署入口。
 
 - Linux 主机 CPU、内存、磁盘、inode、在线状态与采样趋势。
 - Docker 容器发现、运行 / 健康状态、重启次数、手动重启、最近日志。
@@ -11,7 +11,7 @@
 
 ## 运行
 
-服务器部署推荐直接使用 GitHub 自动构建的镜像，详见[镜像部署、探针安装与更新](deploy/README.md)。
+服务器部署推荐使用 Docker Compose 接入已有 Nginx 容器，详见[域名 HTTPS 部署、探针安装与更新](deploy/README.md)。面板不映射宿主机端口，Nginx 拒绝 IP 和未知域名访问。
 服务器无需拉取源码；提交到 `main` 后测试通过即发布到 GHCR，支持 AMD64 和 ARM64。
 
 从仓库编译，需要 Go 1.25 或更新版本：
@@ -25,7 +25,7 @@ go build -trimpath -o system-monitor .
 
 Windows 使用 `go build -o system-monitor.exe .` 和 `system-monitor.exe serve`。Windows 支持监控面板，采集探针支持 Linux。
 
-默认访问 `http://服务器地址:18080`。首次启动在本机控制台显示初始化码，在网页中输入该码，创建至少 12 字节密码的管理员账号。Linux 防火墙需允许管理入口访问；对外使用时在网页选择内置 HTTPS 并上传证书，或使用已有 HTTPS 反向代理。
+直接运行程序时默认监听 `0.0.0.0:18080`，供本机开发验证；服务器部署使用 Compose 和 Nginx 域名入口，不开放面板端口。首次启动在控制台显示初始化码，在网页中输入该码，创建至少 12 字节密码的管理员账号。
 
 默认数据目录为启动目录中的 `data/`，程序自动生成内部数据库和加密密钥。首次启动可用 `--data /absolute/path` 指定存储位置，之后的日常参数均在网页修改。
 
@@ -110,22 +110,22 @@ Docker Socket 通常需要 root 或 Docker 组权限，等同高权限主机访�
 
 数据库容量主要限制 SQLite 主库，WAL、备份和运行日志单独占空间。在容量压力或剩余空间低于预留值时优先停止历史采样、清理旧记录；当前状态仍尝试保存。磁盘已满或底层存储不可写仍可能阻断写入，应将面板放在业务主机之外。
 
-## Docker 镜像部署（推荐）
+## Docker Compose 部署（推荐）
 
 ```sh
 docker pull ghcr.io/fjiangming/system_monitor:latest
-docker run -d --name system-monitor --restart unless-stopped \
-  --network host --log-driver local \
-  --mount type=volume,src=system-monitor-data,dst=/var/lib/system-monitor \
-  ghcr.io/fjiangming/system_monitor:latest
-docker logs --tail 30 system-monitor
+mkdir -p /opt/system-monitor
+monitor_export=$(docker create ghcr.io/fjiangming/system_monitor:latest)
+docker cp "$monitor_export:/usr/local/share/system-monitor/deploy/." /opt/system-monitor/
+docker rm -v "$monitor_export"
 ```
 
 当前镜像支持公开免登录拉取；若以后改为私有，按[部署文档](deploy/README.md)登录 GHCR。
-此方式用于 Linux 面板。host 网络允许网页更改监听端口；不挂载 Docker Socket，容器采集由宿主探针完成。跨机器运行使用 HTTPS。数据目录应始终位于持久挂载范围内。
+按部署文档创建专用 Docker 网络和数据卷，将已有 Nginx 容器接入网络，配置域名、证书和默认拒绝虚拟主机后，在 `/opt/system-monitor` 执行 `docker compose up -d --wait`。
+只通过域名 HTTPS 初始化；首次页面可直接保存代理信任，账号和代理配置一起验证并入库。
 
 镜像同时包含宿主机探针程序和 systemd 安装文件，可直接通过 `docker cp` 导出安装。
-服务器更新只需拉取新镜像并重建面板容器，挂载同一个数据卷；探针程序单独更新。
+服务器更新只需 `docker compose pull && docker compose up -d --wait`，数据卷自动保留；探针程序单独更新。
 首次接入、更新、固定版本和回退的完整命令见[部署文档](deploy/README.md)。
 
 ## 开发与验证
@@ -140,4 +140,4 @@ npm run test:browser
 SYSTEM_MONITOR_DOCKER_TEST=1 go test -run TestRealDockerRestartAndLogs -v
 ```
 
-浏览器回归启动真实的隔离面板、真实 SQLite / API，使用合成探针报告验证 UI。真实 Docker 集成仅在 Linux Docker 环境运行，会创建并清理一个专用 Alpine 测试容器，不操作业务容器。CI 运行 race、Linux 采集、真实 Docker 重启、浏览器回归和三平台编译，二进制产物位于 GitHub Actions 的 Artifacts。AMD64 和 ARM64 原生镜像测试验证非 root 启动、数据卷重用和探针包导出；全部通过后，`main` 和 `v*` 标签自动发布多架构 GHCR 镜像。CI 不连接服务器部署，也不创建 Release。
+浏览器回归启动真实的隔离面板、真实 SQLite / API，使用合成探针报告验证 UI。真实 Docker 集成仅在 Linux Docker 环境运行，会创建并清理专用测试容器，不操作业务容器。CI 运行 race、Linux 采集、真实 Docker 重启、浏览器回归和三平台编译，二进制产物位于 GitHub Actions 的 Artifacts。AMD64 和 ARM64 原生镜像测试验证非 root 启动、数据卷重用和探针包导出；Compose/Nginx 集成验证端口隔离、域名 HTTPS 初始化与登录、安全 Cookie、IP/Host/SNI 拒绝、其他虚拟主机兼容、伪造转发头拦截及容器更换 IP 后自动恢复。全部通过后，`main` 和 `v*` 标签自动发布多架构 GHCR 镜像。CI 不连接服务器部署，也不创建 Release。
