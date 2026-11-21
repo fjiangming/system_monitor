@@ -1,0 +1,12 @@
+.git
+data
+agent-data
+dist
+artifacts
+node_modules
+*.db
+*.db-*
+*.key
+*.pem
+*.exe
+*.test

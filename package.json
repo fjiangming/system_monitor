@@ -1,0 +1,12 @@
+{
+  "name": "system-monitor-browser-tests",
+  "private": true,
+  "description": "Development-only browser verification; Node is not required to run the service",
+  "scripts": {
+    "check": "node --check web/app.js && node --check scripts/browser-check.cjs",
+    "test:browser": "node scripts/browser-check.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.58.2"
+  }
+}

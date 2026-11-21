@@ -1,0 +1,74 @@
+name: Verify and build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+        env:
+          SYSTEM_MONITOR_DOCKER_TEST: '1'
+      - run: npm ci
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-verification
+          path: artifacts/browser
+  build:
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        target: [linux-amd64, linux-arm64, windows-amd64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - shell: bash
+        run: |
+          target='${{ matrix.target }}'
+          export GOOS="${target%-*}" GOARCH="${target#*-}" CGO_ENABLED=0
+          mkdir -p dist
+          output="dist/system-monitor-$target"
+          if [ "$GOOS" = windows ]; then output="$output.exe"; fi
+          go build -trimpath -ldflags='-s -w' -o "$output" .
+          sha256sum "$output" > "$output.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-monitor-${{ matrix.target }}
+          path: dist/*
+  docker:
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t system-monitor:ci .
+      - run: |
+          docker run -d --name monitor-ci -p 18080:18080 system-monitor:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - if: always()
+        run: docker rm -f monitor-ci || true

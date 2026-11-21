@@ -1,0 +1,23 @@
+[Unit]
+Description=System Monitor Hub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=system-monitor
+Group=system-monitor
+WorkingDirectory=/var/lib/system-monitor/hub
+ExecStart=/usr/local/bin/system-monitor serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

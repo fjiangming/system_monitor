@@ -1,0 +1,13 @@
+/data/
+/agent-data/
+/dist/
+/artifacts/
+/node_modules/
+/test-results/
+/playwright-report/
+*.exe
+*.test
+*.db
+*.db-*
+*.key
+*.pem
