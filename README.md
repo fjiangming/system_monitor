@@ -11,6 +11,9 @@
 
 ## 运行
 
+服务器部署推荐直接使用 GitHub 自动构建的镜像，详见[镜像部署、探针安装与更新](deploy/README.md)。
+服务器无需拉取源码；提交到 `main` 后测试通过即发布到 GHCR，支持 AMD64 和 ARM64。
+
 从仓库编译，需要 Go 1.25 或更新版本：
 
 ```sh
@@ -107,16 +110,23 @@ Docker Socket 通常需要 root 或 Docker 组权限，等同高权限主机访�
 
 数据库容量主要限制 SQLite 主库，WAL、备份和运行日志单独占空间。在容量压力或剩余空间低于预留值时优先停止历史采样、清理旧记录；当前状态仍尝试保存。磁盘已满或底层存储不可写仍可能阻断写入，应将面板放在业务主机之外。
 
-## Docker 运行面板（可选）
+## Docker 镜像部署（推荐）
 
 ```sh
-docker build -t system-monitor .
+docker pull ghcr.io/fjiangming/system_monitor:latest
 docker run -d --name system-monitor --restart unless-stopped \
-  --network host -v system-monitor-data:/var/lib/system-monitor system-monitor
-docker logs system-monitor
+  --network host --log-driver local \
+  --mount type=volume,src=system-monitor-data,dst=/var/lib/system-monitor \
+  ghcr.io/fjiangming/system_monitor:latest
+docker logs --tail 30 system-monitor
 ```
 
-此方式用于 Linux 面板。host 网络允许网页更改监听端口；不挂载 Docker Socket，容器采集由宿主探针完成。跨机器运行使用 HTTPS。容器数据迁移受挂载与用户权限限制。
+首次拉取若提示无权限，按[部署文档](deploy/README.md)将 GHCR 包设为公开或登录 GHCR。
+此方式用于 Linux 面板。host 网络允许网页更改监听端口；不挂载 Docker Socket，容器采集由宿主探针完成。跨机器运行使用 HTTPS。数据目录应始终位于持久挂载范围内。
+
+镜像同时包含宿主机探针程序和 systemd 安装文件，可直接通过 `docker cp` 导出安装。
+服务器更新只需拉取新镜像并重建面板容器，挂载同一个数据卷；探针程序单独更新。
+首次接入、更新、固定版本和回退的完整命令见[部署文档](deploy/README.md)。
 
 ## 开发与验证
 
@@ -130,4 +140,4 @@ npm run test:browser
 SYSTEM_MONITOR_DOCKER_TEST=1 go test -run TestRealDockerRestartAndLogs -v
 ```
 
-浏览器回归启动真实的隔离面板、真实 SQLite / API，使用合成探针报告验证 UI。真实 Docker 集成仅在 Linux Docker 环境运行，会创建并清理一个专用 Alpine 测试容器，不操作业务容器。CI 运行 race、Linux 采集、真实 Docker 重启、浏览器回归、三平台编译和面板镜像构建，构建产物位于 GitHub Actions 的 Artifacts。CI 不部署到服务器，也不自动推送镜像或创建 Release。
+浏览器回归启动真实的隔离面板、真实 SQLite / API，使用合成探针报告验证 UI。真实 Docker 集成仅在 Linux Docker 环境运行，会创建并清理一个专用 Alpine 测试容器，不操作业务容器。CI 运行 race、Linux 采集、真实 Docker 重启、浏览器回归和三平台编译，二进制产物位于 GitHub Actions 的 Artifacts。AMD64 和 ARM64 原生镜像测试验证非 root 启动、数据卷重用和探针包导出；全部通过后，`main` 和 `v*` 标签自动发布多架构 GHCR 镜像。CI 不连接服务器部署，也不创建 Release。

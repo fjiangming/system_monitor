@@ -91,3 +91,35 @@ restart/health/logs, full agent lifecycle and HTTPS rollback. The remaining CI
 failure was the floating runner upgrading to Ubuntu 26.04, unsupported by the
 pinned Playwright release. All CI jobs now use supported Ubuntu 24.04 explicitly;
 browser and build gates are retained.
+
+## 2026-11-21: GitHub image publication and source-free deployment
+
+Authorized scope: implement automatic GitHub container builds and publication so
+servers can deploy and update from images without checking out source. Registry
+publication is included; no production connection or server deployment is run.
+
+- `.github/workflows/ci.yml`: publish GHCR images only for `main` and `v*` refs,
+  after the existing verification and binary builds plus native AMD64/ARM64
+  image tests pass. Use the built-in scoped `GITHUB_TOKEN`, OCI source/revision
+  labels, `latest` on main only, full-commit tags and explicit version tags.
+  Multi-platform builds use Buildx, cross-compilation and shared build caches;
+  concurrent superseded runs for the same ref are cancelled.
+- `Dockerfile`: cross-compile for the requested Linux architecture and package
+  the existing systemd installer and units alongside the binary. Keep the hub
+  non-root with its original persistent path and no Docker Socket access.
+- `scripts/image-check.sh`: verify real native container startup, UID 10001,
+  SQLite creation, executable host-agent export, exact packaged installer/unit
+  content and preservation of the identity key across container replacement.
+  All test containers, volumes and export files are isolated and cleaned.
+- `README.md`, `deploy/README.md`: document GHCR permissions, source-free hub
+  deployment, host-agent extraction/enrollment/update, image tags and digests,
+  pull-before-stop updates, persistent volumes, rollback, paired backups and
+  offline access recovery. Runtime operator settings remain in the UI/database;
+  no Compose, environment configuration or remote execution is introduced.
+
+Local `go vet ./...`, `go test -count=1 ./...`, Actionlint 1.7.7, Linux shell
+syntax checks and `git diff --check` passed. The local Docker daemon is
+unavailable, so native image checks run on GitHub's Linux runners rather than
+being claimed as local tests. Successful publication is gated on those checks;
+the actual published workflow and registry manifests must be verified before
+delivery.
