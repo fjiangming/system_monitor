@@ -78,3 +78,10 @@ caught a real-Docker fixture issue: Docker's first image pull writes progress to
 stderr, which had been combined with the container ID. The fixture now captures
 stdout alone for the ID. Production collection uses the Docker HTTP API and is
 unaffected by CLI pull output. The real-Docker check remains required in CI.
+
+Real Docker then exposed a production transport timeout: Docker may spend longer
+than ten seconds stopping a PID 1 process, but a fixed response-header timeout
+was shorter than the authorized restart deadline. Restart POSTs now use their
+configured command context; read-only Docker requests keep a separate ten-second
+bound. Ambiguous failures still remain unknown and are never automatically
+retried. The real container test verifies the complete stop/restart/health path.

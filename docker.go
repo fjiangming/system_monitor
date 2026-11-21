@@ -23,11 +23,16 @@ type dockerClient struct{ client *http.Client }
 func newDocker(socket string) *dockerClient {
 	t := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-	}, MaxIdleConnsPerHost: 8, ResponseHeaderTimeout: 10 * time.Second}
+	}, MaxIdleConnsPerHost: 8}
 	return &dockerClient{client: &http.Client{Transport: t, CheckRedirect: noRedirect}}
 }
 func noRedirect(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 func (d *dockerClient) request(ctx context.Context, method, path string, limit int64) ([]byte, error) {
+	if method != "POST" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+	}
 	r, e := http.NewRequestWithContext(ctx, method, "http://docker"+path, nil)
 	if e != nil {
 		return nil, e
