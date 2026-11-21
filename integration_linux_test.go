@@ -77,7 +77,7 @@ func TestAgentLoopDurableResultAndHeartbeat(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan error, 1)
-	go func() { finished <- runAgent(ctx, agentStore) }()
+	go func() { defer close(finished); finished <- runAgent(ctx, agentStore) }()
 	defer func() {
 		cancel()
 		select {
@@ -118,9 +118,18 @@ func TestAgentLoopDurableResultAndHeartbeat(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	ctx, cancel = context.WithCancel(context.Background())
-	finished = make(chan error, 1)
-	go func() { finished <- runAgent(ctx, agentStore) }()
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	finished2 := make(chan error, 1)
+	go func() { finished2 <- runAgent(ctx2, agentStore) }()
+	defer func() {
+		cancel2()
+		select {
+		case <-finished2:
+		case <-time.After(5 * time.Second):
+			t.Error("restarted agent did not stop")
+		}
+	}()
 	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		result, _ = hubStore.Job(interrupted.ID)

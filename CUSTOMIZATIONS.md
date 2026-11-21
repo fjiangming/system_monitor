@@ -25,7 +25,7 @@ verification and file inventory follow.
 | `monitor.go`, `notify.go` | New-observation failure counting, offline/stale/host/container/unit/HTTP/backup alerts, maintenance/ack/recovery, separate bounded external HTTP probes, durable notification queue and Feishu/WeCom/Bark/SMTP/HMAC webhook delivery. |
 | `web/index.html`, `web/app.js`, `web/app.css`, `web/icon.svg` | Responsive Chinese monitoring/settings/account interface, eight complete settings categories, manual restart confirmation and persistent receipts, first-run/login, mobile and dark layouts; no mocked production state or runtime CDN calls. |
 | `web/lucide.min.js`, `web/lucide-LICENSE.txt`, `THIRD_PARTY_NOTICES.md` | Vendored Lucide 0.468.0 with original ISC notice and dependency attribution. |
-| `store_test.go`, `api_test.go`, `docker_test.go`, `integration_linux_test.go`, `scripts/browser-check.cjs` | Storage/auth/API/job/alert/encryption/backup/migration tests; fake Docker protocol tests; Linux Unix Socket/collector/agent-loop/crash-recovery integration; opt-in real Docker restart/log integration; real hub/browser acceptance checks with isolated agent fixtures. |
+| `store_test.go`, `api_test.go`, `docker_test.go`, `integration_linux_test.go`, `runtime_test.go`, `scripts/browser-check.cjs` | Storage/auth/API/job/alert/encryption/backup/migration tests; fake Docker protocol tests; Linux Unix Socket/collector/agent-loop/crash-recovery integration; opt-in real Docker restart/log integration; actual HTTPS rollback/restart verification; real hub/browser acceptance checks with isolated agent fixtures. |
 | `go.mod`, `go.sum`, `package.json`, `package-lock.json` | Pinned Go runtime and development-only browser dependencies; no Node dependency for running the product. |
 | `Dockerfile`, `.dockerignore`, `deploy/install.sh`, `deploy/*.service` | Optional hub image and Linux systemd installation assets, shipped without executing deployment. No Docker Socket mount for the hub. |
 | `.github/workflows/ci.yml`, `.gitignore`, `.gitattributes`, `AGENTS.md`, `README.md`, `CUSTOMIZATIONS.md` | Verification/build gates, source hygiene, maintenance rules and Chinese operation/restore documentation. |
@@ -59,3 +59,16 @@ screenshots and test identities are excluded from source control.
 The delivery uses a dedicated temporary checkout. After a verified GitHub push
 and final checks, that exact checkout is removed at the user's request. Existing
 user-owned checkouts, the originating repository and unrelated edits are kept.
+
+### Final verification fixes
+
+The first GitHub Linux run caught a missing explicit cancellation in a Linux-only
+test's second agent lifecycle. The test now closes and waits for each lifecycle
+and explicitly cancels both contexts. Final review also found that pending TLS
+credential deletion could break rollback to an active HTTPS listener. Active
+service metadata and encrypted active certificate copies now commit atomically,
+remain separate from pending credentials, and are excluded from secret-status
+responses. The active certificate remains in memory on apply failure and in the
+database across process restarts. `runtime_test.go` verifies an actual trusted
+HTTPS connection, occupied target port, cleared pending certificates, rollback,
+and a second start from the same database.

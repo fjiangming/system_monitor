@@ -146,6 +146,20 @@ func serviceTLS(s *Store, c ServiceConfig) (*tls.Config, error) {
 	}
 	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil
 }
+func activeServiceTLS(s *Store, c ServiceConfig) (*tls.Config, error) {
+	if c.TLSMode != "builtin" {
+		return nil, nil
+	}
+	certificate, key := s.Secret("runtime:tlsCertificate"), s.Secret("runtime:tlsPrivateKey")
+	if certificate == "" || key == "" {
+		return serviceTLS(s, c)
+	}
+	pair, e := tls.X509KeyPair([]byte(certificate), []byte(key))
+	if e != nil {
+		return nil, errors.New("当前生效的 HTTPS 证书不可用")
+	}
+	return &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}, nil
+}
 func listenService(c ServiceConfig) (net.Listener, error) {
 	return net.Listen("tcp", net.JoinHostPort(c.ListenAddress, fmt.Sprint(c.ListenPort)))
 }
@@ -153,6 +167,10 @@ func serveHub(ctx context.Context, s *Store) error {
 	defer func() { s.Close() }()
 	active := defaultConfig(s.Root).Service
 	_ = json.Unmarshal([]byte(s.meta("activeService")), &active)
+	tlsConfig, e := activeServiceTLS(s, active)
+	if e != nil {
+		return e
+	}
 	apply := make(chan struct{}, 1)
 	listener, e := listenService(active)
 	if e != nil {
@@ -165,11 +183,6 @@ func serveHub(ctx context.Context, s *Store) error {
 		}
 	}()
 	for {
-		tlsConfig, e := serviceTLS(s, active)
-		if e != nil {
-			listener.Close()
-			return e
-		}
 		rawListener := listener
 		if tlsConfig != nil {
 			listener = tls.NewListener(rawListener, tlsConfig)
@@ -218,9 +231,10 @@ func serveHub(ctx context.Context, s *Store) error {
 		var newStore *Store
 		var newRelease func()
 		var newListener net.Listener
+		var desiredTLS *tls.Config
 		e = desired.Validate()
 		if e == nil {
-			_, e = serviceTLS(s, desired.Service)
+			desiredTLS, e = serviceTLS(s, desired.Service)
 		}
 		if e == nil {
 			newListener, e = listenService(desired.Service)
@@ -229,18 +243,26 @@ func serveHub(ctx context.Context, s *Store) error {
 			newStore, newRelease, e = migrateStore(s, desired.Storage.DataDirectory)
 		}
 		if e == nil {
+			targetStore := s
+			if newStore != nil {
+				targetStore = newStore
+			}
+			e = targetStore.SaveActiveService(desired.Service)
+		}
+		if e == nil {
 			if newStore != nil {
 				if e = previous.setMeta("relocatedTo", newStore.Root); e == nil {
 					s = newStore
 					releases = append(releases, newRelease)
 					_ = previous.Close()
-				} else {
-					newStore.Close()
-					newRelease()
 				}
 			}
 		}
 		if e != nil {
+			if newStore != nil && s == previous {
+				newStore.Close()
+				newRelease()
+			}
 			if newListener != nil {
 				newListener.Close()
 			}
@@ -254,8 +276,8 @@ func serveHub(ctx context.Context, s *Store) error {
 			continue
 		}
 		active = desired.Service
+		tlsConfig = desiredTLS
 		listener = newListener
-		_ = s.setMeta("activeService", encode(active))
 		_ = s.setMeta("applyStatus", "应用成功 · "+time.Now().Format(time.RFC3339))
 		s.Event("", "runtime", "success", "服务设置已应用", net.JoinHostPort(active.ListenAddress, fmt.Sprint(active.ListenPort)), "")
 	}

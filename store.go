@@ -205,10 +205,41 @@ func (s *Store) SecretStatus() map[string]bool {
 	for rows.Next() {
 		var k string
 		if rows.Scan(&k) == nil {
-			out[k] = true
+			if allowedSecrets[k] {
+				out[k] = true
+			}
 		}
 	}
 	return out
+}
+func (s *Store) SaveActiveService(c ServiceConfig) error {
+	encrypted := map[string]string{}
+	if c.TLSMode == "builtin" {
+		for _, key := range []string{"tlsCertificate", "tlsPrivateKey"} {
+			value, e := s.encrypt("runtime:"+key, s.Secret(key))
+			if e != nil {
+				return e
+			}
+			encrypted["runtime:"+key] = value
+		}
+	}
+	tx, e := s.DB.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	if _, e = tx.Exec(`UPDATE meta SET v=? WHERE k='activeService'`, encode(c)); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(`DELETE FROM secrets WHERE k IN ('runtime:tlsCertificate','runtime:tlsPrivateKey')`); e != nil {
+		return e
+	}
+	for k, v := range encrypted {
+		if _, e = tx.Exec(`INSERT INTO secrets(k,v) VALUES(?,?)`, k, v); e != nil {
+			return e
+		}
+	}
+	return tx.Commit()
 }
 
 var allowedSecrets = map[string]bool{"feishuEndpoint": true, "feishuSecret": true, "wecomEndpoint": true, "barkKey": true, "smtpPassword": true, "webhookEndpoint": true, "webhookSecret": true, "tlsCertificate": true, "tlsPrivateKey": true}
