@@ -76,6 +76,7 @@ const stateLabels = {
   unchecked: "已启动 · 未验健康",
   unknown: "结果未确认",
   cancelled: "已取消",
+  downloading: "下载并校验中",
   active: "运行中",
   inactive: "未运行",
   activating: "启动中",
@@ -160,6 +161,22 @@ function networkView(s) {
     <div class="trend network-trend" id="network-trend" aria-label="最近入站与出站流量趋势"></div>
     ${interfaces.length ? `<div class="table-scroll"><table class="network-table"><thead><tr><th>网卡</th><th>入站 / 出站</th><th>丢包（收 / 发，包/秒）</th><th>错误（收 / 发，包/秒）</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="sub">尚无流量采样</p>'}
   </section>`;
+}
+function agentVersionLabel(v, revision) {
+  return (v || "未知版本") + (revision ? " · " + revision.slice(0, 12) : "");
+}
+function agentUpdateBadge(state) {
+  const labels = { queued: "等待领取", downloading: "下载并校验中", restarting: "等待新版采样", success: "更新成功", failed: "更新失败", unknown: "结果未确认", cancelled: "已取消" };
+  return badge(labels[state] || state, state === "success" ? "good" : ["failed", "unknown"].includes(state) ? "warn" : "");
+}
+function agentUpdateContent(s) {
+  if (!s) return '<p class="sub">等待探针接入</p>';
+  const u = s.agentUpdate || {};
+  const latest = u.latest;
+  return `<div class="agent-version-grid"><div><span class="small muted">当前探针</span><p class="mono">${esc(agentVersionLabel(s.snapshot.agentVersion, s.snapshot.agent?.revision))}</p></div><div><span class="small muted">面板提供版本</span><p class="mono">${u.target ? esc(agentVersionLabel(u.target.version, u.target.revision)) : "—"}</p></div></div>${latest ? `<div class="health-strip">${agentUpdateBadge(latest.state)}<span class="small">${esc(latest.result || "等待探针领取更新任务")}</span></div>` : ""}<p class="small muted">${esc(u.reason)}</p><div class="form-actions">${admin() ? button("agent-update", "download", "更新探针", `data-id="${esc(s.id)}" ${u.available ? "" : "disabled"} title="${esc(u.reason || "更新到面板提供的版本")}"`) : ""}${latest ? button("agent-update-result", "clipboard-list", "更新记录", `data-update="${esc(latest.id)}"`) : ""}</div>`;
+}
+function agentUpdateSection(s) {
+  return `<section class="section" aria-label="探针更新"><h2>探针版本</h2>${agentUpdateContent(s)}</section>`;
 }
 function age(at) {
   if (!at) return "尚未接入";
@@ -343,7 +360,7 @@ function detailView() {
       .filter((a) => a.serverID === s.id)
       .map(alertRow)
       .join("") || '<p class="sub">暂无告警</p>'
-  }</section>${networkView(s)}`;
+  }</section>${networkView(s)}${agentUpdateSection(s)}`;
 }
 function containerTable(s, settings = false) {
   const list = s.snapshot.containers || [];
@@ -545,8 +562,10 @@ function settingsExtra() {
     const s = app.state.servers.find((x) => x.id === app.serverID);
     return `<div class="form-section"><h3>监测状态</h3>${s ? automaticNetworkStatus(s) : badge("等待探针接入")}<details class="network-options"><summary>网卡选择（可选）</summary><div class="form-grid">${fields([["network.interfaces", "网卡（每行一个，留空自动选择）", "textarea"]], app.server)}</div></details></div>`;
   }
-  if (cat === "servers")
-    return `<div class="form-section"><h3>探针状态</h3><p class="small muted">${app.serverID ? esc(age(app.state.servers.find((s) => s.id === app.serverID)?.lastSeen)) : "尚未创建服务器"}</p>${app.serverID ? `<div class="form-actions">${button("revoke", "key-round", "撤销探针凭据")}${button("delete-server", "trash-2", "移除服务器")}</div>` : ""}</div>`;
+  if (cat === "servers") {
+    const s = app.state.servers.find((s) => s.id === app.serverID);
+    return `<div class="form-section"><h3>探针状态</h3><p class="small muted">${s ? esc(age(s.lastSeen)) : "尚未创建服务器"}</p>${agentUpdateContent(s)}${app.serverID ? `<div class="form-actions">${button("revoke", "key-round", "撤销探针凭据")}${button("delete-server", "trash-2", "移除服务器")}</div>` : ""}</div>`;
+  }
   if (cat === "targets") {
     const s = app.state.servers.find((x) => x.id === app.serverID) || {
       snapshot: { containers: [] },
@@ -691,6 +710,22 @@ function showRestart(serverID, containerID) {
   );
 }
 let jobPoll = 0;
+function showAgentUpdate(serverID) {
+  if (app.serverDirty) throw Error("请先保存服务器设置");
+  const s = app.state.servers.find((s) => s.id === serverID);
+  if (!s?.agentUpdate?.available) throw Error(s?.agentUpdate?.reason || "当前无法更新探针");
+  const target = s.agentUpdate.target;
+  openDialog("更新探针", `<p>${esc(s.config.name)}</p><div class="agent-version-grid"><div><span class="small muted">当前版本</span><p>${esc(agentVersionLabel(s.snapshot.agentVersion, s.snapshot.agent?.revision))}</p></div><div><span class="small muted">目标版本</span><p>${esc(agentVersionLabel(target.version, target.revision))}</p></div></div><p class="small muted">更新期间探针会短暂重连，原有身份和监控设置保留。</p><div class="dialog-footer">${button("close", "x", "取消")}${button("confirm-agent-update", "download", "确认更新", `class="primary" data-id="${esc(s.id)}" data-sha="${esc(target.sha256)}"`)}</div>`);
+}
+async function showAgentUpdateResult(id) {
+  clearTimeout(jobPoll);
+  const u = await api("agent-update?id=" + encodeURIComponent(id));
+  openDialog("探针更新记录", `<div class="badges">${agentUpdateBadge(u.state)}</div><p class="status-line">${esc(u.result || "等待探针领取更新任务")}</p><p class="small muted">${esc(agentVersionLabel(u.target.version, u.target.revision))}</p><p class="small muted">${esc(u.actor)} · ${esc(time(u.created))}</p><div class="dialog-footer">${button("close", "check", "关闭")}</div>`);
+  if (["queued", "downloading", "restarting"].includes(u.state))
+    jobPoll = setTimeout(() => {
+      if ($("#dialog").open) showAgentUpdateResult(id).catch((e) => { $("#dialog-status").textContent = e.message; });
+    }, 1500);
+}
 async function showJob(id) {
   const j = await api("job?id=" + encodeURIComponent(id));
   openDialog(
@@ -818,6 +853,19 @@ async function action(el) {
       break;
     case "enrollment":
       await showEnrollment();
+      break;
+    case "agent-update":
+      showAgentUpdate(el.dataset.id);
+      break;
+    case "confirm-agent-update": {
+      const u = await api("server/agent-update", { id: el.dataset.id, sha256: el.dataset.sha });
+      await showAgentUpdateResult(u.id);
+      await loadState();
+      render();
+      break;
+    }
+    case "agent-update-result":
+      await showAgentUpdateResult(el.dataset.update);
       break;
     case "copy-enrollment":
       await navigator.clipboard.writeText($("#enrollment-command").textContent);

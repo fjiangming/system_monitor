@@ -26,18 +26,27 @@ type agentReply struct {
 	Access   AccessConfig `json:"access"`
 	Job      *Job         `json:"job"`
 	Timezone string       `json:"timezone"`
+	Update   *AgentUpdate `json:"update,omitempty"`
 }
 
-func agentRequest(ctx context.Context, identity agentIdentity, path string, body any, output any, c ServerConfig) error {
+func agentHTTPClient(c ServerConfig) (*http.Client, *http.Transport, error) {
 	t := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: !c.VerifyTLS}}
-	defer t.CloseIdleConnections()
 	if c.Proxy != "" {
 		p, e := url.Parse(c.Proxy)
 		if e != nil {
-			return e
+			return nil, nil, e
 		}
 		t.Proxy = http.ProxyURL(p)
 	}
+	return &http.Client{Transport: t, CheckRedirect: noRedirect}, t, nil
+}
+
+func agentRequest(ctx context.Context, identity agentIdentity, path string, body any, output any, c ServerConfig) error {
+	client, transport, e := agentHTTPClient(c)
+	if e != nil {
+		return e
+	}
+	defer transport.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	r, e := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(identity.Hub, "/")+path, bytes.NewBufferString(encode(body)))
@@ -48,7 +57,7 @@ func agentRequest(ctx context.Context, identity agentIdentity, path string, body
 	if identity.Token != "" {
 		r.Header.Set("Authorization", "Bearer "+identity.Token)
 	}
-	resp, e := (&http.Client{Transport: t, CheckRedirect: noRedirect}).Do(r)
+	resp, e := client.Do(r)
 	if e != nil {
 		return errors.New("监控端连接失败")
 	}
@@ -101,10 +110,13 @@ func runAgent(ctx context.Context, s *Store) error {
 	var jobs sync.WaitGroup
 	defer func() { cancelRun(); jobs.Wait() }()
 	finished := make(chan struct{}, 1)
+	updateDone := make(chan error, 1)
+	updating := false
 	var pending *Snapshot
 	var nextSample time.Time
 	var failures int
 	for ctx.Err() == nil {
+		reportAgentUpdateRecovery(ctx, s, identity, config)
 		var reply agentReply
 		body := map[string]any{"id": identity.ID, "snapshot": pending}
 		if e := agentRequest(ctx, identity, "/api/agent/poll", body, &reply, config); e != nil {
@@ -118,6 +130,7 @@ func runAgent(ctx context.Context, s *Store) error {
 			continue
 		}
 		failures = 0
+		acknowledgeAgentUpdate(s, pending)
 		pending = nil
 		if encode(config) != encode(reply.Config) {
 			nextSample = time.Time{}
@@ -150,7 +163,16 @@ func runAgent(ctx context.Context, s *Store) error {
 				_, _ = s.DB.Exec(`UPDATE agent_jobs SET state='reported' WHERE id=?`, row.id)
 			}
 		}
-		if j := reply.Job; j != nil {
+		if reply.Update != nil && !updating {
+			jobs.Wait()
+			updating = true
+			jobs.Add(1)
+			go func(update AgentUpdate, settings ServerConfig) {
+				defer jobs.Done()
+				updateDone <- performAgentUpdate(ctx, s, identity, settings, update)
+			}(*reply.Update, config)
+		}
+		if j := reply.Job; j != nil && !updating {
 			if j.Deadline < unixNow() {
 				j.State = "unknown"
 				j.Result = "命令已超期"
@@ -182,12 +204,27 @@ func runAgent(ctx context.Context, s *Store) error {
 			sampleCtx, cancel := context.WithTimeout(ctx, time.Duration(min(config.HeartbeatTimeout/2, 60))*time.Second)
 			sample := col.collect(sampleCtx, config)
 			cancel()
+			if sample.Agent != nil && !secureAgentUpdateHub(identity.Hub, config) {
+				info := *sample.Agent
+				info.Updatable = false
+				info.Reason = "探针更新需要经过证书校验的 HTTPS 连接"
+				sample.Agent = &info
+			}
 			pending = &sample
 			nextSample = time.Now().Add(time.Duration(config.Heartbeat) * time.Second)
 		}
 		_, _ = s.DB.Exec(`DELETE FROM agent_jobs WHERE state='reported' AND rowid NOT IN (SELECT rowid FROM agent_jobs ORDER BY rowid DESC LIMIT 1000)`)
-		if !pause(ctx, time.Duration(config.CommandPoll)*time.Second) {
-			break
+		pollTimer := time.NewTimer(time.Duration(config.CommandPoll) * time.Second)
+		select {
+		case <-ctx.Done():
+			pollTimer.Stop()
+		case e := <-updateDone:
+			pollTimer.Stop()
+			updating = false
+			if errors.Is(e, errAgentUpdateRestart) {
+				return e
+			}
+		case <-pollTimer.C:
 		}
 	}
 	return nil

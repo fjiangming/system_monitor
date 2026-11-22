@@ -16,6 +16,8 @@ if [ "$mode" = hub ]; then
  printf '%s\n' 'Hub: http://SERVER_IP:18080' 'Initialization code: sudo journalctl -u system-monitor.service -n 30 --no-pager'
 else
  install -d -m 0700 /var/lib/system-monitor/agent
+ install -d -m 0700 /var/lib/system-monitor/agent/bin
+ install -m 0755 "$binary" /var/lib/system-monitor/agent/bin/system-monitor
  install -m 0644 "$deploy_dir/system-monitor-agent.service" /etc/systemd/system/system-monitor-agent.service
  systemctl daemon-reload
  printf '%s\n' 'In the hub, create a server and generate its enrollment command.' 'Run that command from /var/lib/system-monitor/agent, using /usr/local/bin/system-monitor.' 'Then: sudo systemctl enable --now system-monitor-agent.service'

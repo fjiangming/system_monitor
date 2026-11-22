@@ -13,6 +13,8 @@ import (
 
 const version = "0.1.0"
 
+var buildRevision = "dev"
+
 type Config struct {
 	Service       ServiceConfig      `json:"service"`
 	Access        AccessConfig       `json:"access"`
@@ -141,15 +143,16 @@ type ServerConfig struct {
 	Network          NetworkConfig            `json:"network"`
 }
 type Server struct {
-	ID               string        `json:"id"`
-	Config           ServerConfig  `json:"config"`
-	Revision         int64         `json:"revision"`
-	LastSeen         int64         `json:"lastSeen"`
-	SampleAt         int64         `json:"sampleAt"`
-	Online           bool          `json:"online"`
-	MaintenanceUntil int64         `json:"maintenanceUntil"`
-	Snapshot         Snapshot      `json:"snapshot"`
-	NetworkStatus    NetworkStatus `json:"networkStatus"`
+	ID               string          `json:"id"`
+	Config           ServerConfig    `json:"config"`
+	Revision         int64           `json:"revision"`
+	LastSeen         int64           `json:"lastSeen"`
+	SampleAt         int64           `json:"sampleAt"`
+	Online           bool            `json:"online"`
+	MaintenanceUntil int64           `json:"maintenanceUntil"`
+	Snapshot         Snapshot        `json:"snapshot"`
+	NetworkStatus    NetworkStatus   `json:"networkStatus"`
+	AgentUpdate      AgentUpdateView `json:"agentUpdate"`
 }
 type Container struct {
 	ID        string `json:"id"`
@@ -218,6 +221,7 @@ type Snapshot struct {
 	Errors       []string           `json:"errors"`
 	At           int64              `json:"at"`
 	AgentVersion string             `json:"agentVersion"`
+	Agent        *AgentInfo         `json:"agent,omitempty"`
 }
 type Job struct {
 	ID            string `json:"id"`

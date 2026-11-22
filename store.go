@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS network_status(server_id TEXT PRIMARY KEY REFERENCES 
 CREATE TABLE IF NOT EXISTS check_results(server_id TEXT NOT NULL,id TEXT NOT NULL,result TEXT NOT NULL,PRIMARY KEY(server_id,id));
 CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,message TEXT NOT NULL,revision INTEGER NOT NULL,due INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',lease INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS agent_jobs(id TEXT PRIMARY KEY,state TEXT NOT NULL,result TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS agent_updates(id TEXT PRIMARY KEY,server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,target TEXT NOT NULL,previous_sha256 TEXT NOT NULL,state TEXT NOT NULL,result TEXT NOT NULL DEFAULT '',actor TEXT NOT NULL,created INTEGER NOT NULL,updated INTEGER NOT NULL,deadline INTEGER NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS agent_updates_active ON agent_updates(server_id) WHERE state IN ('queued','downloading','restarting');
 CREATE TABLE IF NOT EXISTS login_limits(k TEXT PRIMARY KEY,failures INTEGER NOT NULL,until INTEGER NOT NULL);
 `
 	if _, e = db.Exec(schema); e != nil {
@@ -412,6 +414,7 @@ func (s *Store) SaveServer(id string, c ServerConfig, rev int64) (string, error)
 		return "", errors.New("服务器设置已变更或不存在，请刷新")
 	}
 	_, _ = s.DB.Exec(`UPDATE jobs SET state='cancelled',result='服务器设置已更新，请重新确认后提交' WHERE server_id=? AND action='restart' AND state='queued'`, id)
+	_, _ = s.DB.Exec(`UPDATE agent_updates SET state='cancelled',result='服务器设置已更新，请重新确认',updated=? WHERE server_id=? AND state='queued'`, unixNow(), id)
 	_, _ = s.DB.Exec(`DELETE FROM check_results WHERE server_id=?`, id)
 	return id, nil
 }
@@ -456,6 +459,9 @@ func (s *Store) SaveSample(id string, snapshot *Snapshot) error {
 	}
 	if !validNetworkSample(snapshot.Network) {
 		return errors.New("invalid network sample")
+	}
+	if a := snapshot.Agent; a != nil && (len(a.Revision) > 128 || len(a.Reason) > 1024 || len(a.Arch) > 16 || len(a.SHA256) > 64 || a.Protocol < 0 || a.Protocol > 1000) {
+		return errors.New("invalid agent build information")
 	}
 	snapshot.At = unixNow()
 	snapshot.AgentVersion = strings.TrimSpace(snapshot.AgentVersion)
@@ -519,6 +525,9 @@ func (s *Store) CreateJob(serverID, containerID, action, remark, confirmation, a
 	if !server.Online || !server.Config.Enabled || server.SampleAt < unixNow()-int64(server.Config.HeartbeatTimeout) {
 		return Job{}, errors.New("探针离线或状态已过期")
 	}
+	if s.pendingAgentUpdate(serverID) {
+		return Job{}, errors.New("请等待探针更新完成后再操作容器")
+	}
 	var target *Container
 	for _, v := range server.Snapshot.Containers {
 		if v.ID == containerID {
@@ -558,7 +567,7 @@ func (s *Store) CreateJob(serverID, containerID, action, remark, confirmation, a
 		return Job{}, errors.New("操作未获授权")
 	}
 	var active int
-	_ = s.DB.QueryRow(`SELECT count(*) FROM jobs WHERE state IN ('queued','leased') AND deadline>?`, unixNow()).Scan(&active)
+	_ = s.DB.QueryRow(`SELECT (SELECT count(*) FROM jobs WHERE state IN ('queued','leased') AND deadline>?) + (SELECT count(*) FROM agent_updates WHERE state IN ('queued','downloading','restarting') AND deadline>?)`, unixNow(), unixNow()).Scan(&active)
 	if active >= c.Service.MaxOps {
 		return Job{}, errors.New("已有操作执行中，请稍后重试")
 	}
@@ -569,6 +578,9 @@ func (s *Store) CreateJob(serverID, containerID, action, remark, confirmation, a
 func (s *Store) Lease(id string) (*Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.pendingAgentUpdate(id) {
+		return nil, nil
+	}
 	server, e := s.Server(id)
 	if e != nil || !server.Config.Enabled {
 		return nil, e
@@ -688,6 +700,7 @@ func (s *Store) History(id string) []map[string]any {
 	return out
 }
 func (s *Store) ExpireJobs() {
+	s.expireAgentUpdates()
 	_, _ = s.DB.Exec(`UPDATE jobs SET state='unknown',result='探针未在期限内确认结果，请核对容器状态后再操作' WHERE state IN ('queued','leased') AND deadline<?`, unixNow())
 	_, _ = s.DB.Exec(`DELETE FROM sessions WHERE expires<?`, unixNow())
 }
@@ -697,6 +710,7 @@ func (s *Store) Prune() {
 	_, _ = s.DB.Exec(`DELETE FROM history WHERE at<?`, now-int64(c.Storage.MetricsDays)*86400)
 	_, _ = s.DB.Exec(`DELETE FROM events WHERE (kind='action' AND at<?) OR (kind<>'action' AND at<?)`, now-int64(c.Storage.AuditDays)*86400, now-int64(c.Storage.EventsDays)*86400)
 	_, _ = s.DB.Exec(`DELETE FROM jobs WHERE state NOT IN ('queued','leased') AND created<?`, now-int64(c.Storage.AuditDays)*86400)
+	_, _ = s.DB.Exec(`DELETE FROM agent_updates WHERE state NOT IN ('queued','downloading','restarting') AND created<?`, now-int64(c.Storage.AuditDays)*86400)
 	_, _ = s.DB.Exec(`DELETE FROM outbox WHERE state IN ('sent','failed','cancelled') AND due<?`, now-7*86400)
 	// Bound retained samples even when the configured retention cannot fit the disk budget.
 	var pages, size, freePages int64

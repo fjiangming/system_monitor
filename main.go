@@ -24,6 +24,9 @@ import (
 
 func main() {
 	if e := entry(); e != nil {
+		if errors.Is(e, errAgentUpdateRestart) {
+			os.Exit(75)
+		}
 		fmt.Fprintln(os.Stderr, e)
 		os.Exit(1)
 	}
@@ -38,6 +41,9 @@ func entry() error {
 	if mode == "version" {
 		fmt.Println(version)
 		return nil
+	}
+	if mode == "build-info" {
+		return json.NewEncoder(os.Stdout).Encode(buildInfo())
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -74,6 +80,9 @@ func entry() error {
 	if e != nil {
 		return e
 	}
+	if mode == "agent" && sub == "supervise" {
+		return superviseAgent(ctx, abs)
+	}
 	release, e := lockDirectory(abs)
 	if e != nil {
 		return e
@@ -98,7 +107,7 @@ func entry() error {
 			fmt.Println("探针接入成功")
 			return nil
 		}
-		if sub != "run" {
+		if sub != "run" && sub != "managed" {
 			return errors.New("未知探针命令")
 		}
 		return runAgent(ctx, s)

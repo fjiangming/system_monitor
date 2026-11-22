@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const net = require("node:net");
 const http = require("node:http");
+const { createHash } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const root = path.resolve(__dirname, "..");
@@ -141,6 +142,12 @@ async function check() {
     stdio: "pipe",
     windowsHide: true,
   });
+  const agentPackage = path.join(tmp, "agents", "system-monitor-linux-amd64");
+  fs.mkdirSync(path.dirname(agentPackage), { recursive: true });
+  execFileSync("go", ["build", "-trimpath", "-o", agentPackage, "."], {
+    cwd: root, stdio: "pipe", windowsHide: true,
+    env: { ...process.env, GOOS: "linux", GOARCH: "amd64", CGO_ENABLED: "0" },
+  });
   await start();
   browser = await chromium.launch({
     headless: true,
@@ -243,7 +250,7 @@ async function check() {
   await page.locator("[data-action=refresh]").click();
   await page.locator("[data-action=detail]").first().click();
   await page.getByRole("heading", { name: "容器", exact: true }).waitFor();
-  await page.locator("#network-trend .network-sample:not(.missing)").waitFor();
+  await page.locator("#network-trend .network-sample:not(.missing)").first().waitFor();
   assert.equal(await page.locator(".network-summary").getByText("10.00 Mbps", { exact: true }).count(), 1);
   assert.equal(await page.locator("#network-trend .missing").count(), 1);
   assert.ok((await page.locator("#network-trend .network-sample:not(.missing)").getAttribute("title")).includes("4000 包/秒"));
@@ -253,6 +260,39 @@ async function check() {
     path: path.join(artifacts, "desktop-monitor.png"),
     fullPage: true,
   });
+  assert.equal(await page.locator('[data-action="agent-update"]').isDisabled(), true);
+  await page.getByText("旧探针需先手动安装一次新版托管服务", { exact: true }).waitFor();
+  snapshot.agent = { protocol: 1, arch: "amd64", revision: "previous", sha256: "1".repeat(64), updatable: true };
+  await agent("poll", { id, snapshot }, identity.token);
+  await page.locator("[data-action=refresh]").click();
+  await page.locator("[data-action=agent-update]").click();
+  await page.setViewportSize({ width: 320, height: 800 });
+  await overflow(page);
+  await page.screenshot({ path: path.join(artifacts, "agent-update-confirm-mobile.png"), fullPage: true });
+  await page.locator("[data-action=confirm-agent-update]").click();
+  await page.locator("#dialog").getByText("等待领取", { exact: true }).waitFor();
+  const updateReply = await agent("poll", { id }, identity.token);
+  assert.ok(updateReply.update);
+  assert.equal(updateReply.job, null);
+  assert.equal(updateReply.update.target.arch, "amd64");
+  const packageResponse = await fetch(base + "/api/agent/update-download", {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + identity.token },
+    body: JSON.stringify({ id, update: { id: updateReply.update.id } }),
+  });
+  assert.equal(packageResponse.status, 200);
+  const packageBytes = Buffer.from(await packageResponse.arrayBuffer());
+  assert.equal(createHash("sha256").update(packageBytes).digest("hex"), updateReply.update.target.sha256);
+  await agent("update-status", { id, update: { id: updateReply.update.id, state: "restarting" } }, identity.token);
+  snapshot.agent.sha256 = updateReply.update.target.sha256;
+  snapshot.agent.revision = updateReply.update.target.revision;
+  await agent("poll", { id, snapshot }, identity.token);
+  await page.locator("#dialog").getByText("更新成功", { exact: true }).waitFor();
+  await page.screenshot({ path: path.join(artifacts, "agent-update-success-mobile.png"), fullPage: true });
+  await page.locator("#dialog [data-action=close]").first().click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator("[data-action=refresh]").click();
+  assert.equal(await page.locator('[data-action="agent-update"]').isDisabled(), true);
+  await page.screenshot({ path: path.join(artifacts, "agent-update-desktop.png"), fullPage: true });
   await page.locator("[data-action=edit-server]").click();
   await category(page, "network");
   assert.equal(await page.locator("#f-network-automatic").isChecked(), true);
@@ -379,7 +419,7 @@ async function check() {
       fullPage: true,
     });
     await page.locator("[data-action=nav][data-view=monitor]").click();
-    await page.locator("#network-trend .network-sample:not(.missing)").waitFor();
+    await page.locator("#network-trend .network-sample:not(.missing)").first().waitFor();
     await overflow(page);
     await page.screenshot({
       path: path.join(artifacts, "monitor-" + width + ".png"),
@@ -406,6 +446,8 @@ async function check() {
   await vp.locator("#auth-form [type=submit]").click();
   await vp.getByRole("heading", { name: "运行监控", exact: true }).waitFor();
   assert.equal(await vp.locator("[data-view=settings]").count(), 0);
+  await vp.locator("[data-action=detail]").first().click();
+  assert.equal(await vp.locator("[data-action=agent-update]").count(), 0);
   const forbidden = await viewer.request.get(base + "/api/config");
   assert.equal(forbidden.status(), 403);
   await viewer.close();
@@ -455,7 +497,7 @@ async function check() {
   });
   assert.deepEqual(errors, [], "browser runtime errors");
   console.log(
-    "Browser checks passed: setup, real API enrollment, permissions, restart receipts, database confirmation, notification, accounts, traffic settings and charts, 9 settings groups at 4 widths, port apply, data migration and restart.",
+    "Browser checks passed: setup, real API enrollment, permissions, agent update confirmation/download/receipts, restart receipts, database confirmation, notification, accounts, traffic settings and charts, 9 settings groups at 4 widths, port apply, data migration and restart.",
   );
 }
 check()

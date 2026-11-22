@@ -293,3 +293,56 @@ The existing GitHub workflow verifies Linux race/real-Docker/browser behavior,
 platform builds and native images before publishing AMD64/ARM64 GHCR images.
 Verify its result after pushing. No production server deployment is authorized
 or performed by this publication request.
+
+## 2026-11-22: Administrator-triggered agent updates in the web interface
+
+Authorized scope: add a manual update button, automatic package transfer and
+verification, progress/results and supervised recovery to the existing monitor.
+No server connection, production configuration change, restart or deployment is
+included. Preserve the unrelated pre-existing deployment ledger above.
+
+- `agent_update*.go`, `agent.go`, `collector_linux.go`, `model.go`, `store.go`,
+  `api.go`, `main.go`: report architecture/build/digest/update capability; expose
+  administrator/CSRF-protected, immutable-target update tasks and authenticated
+  package downloads using the existing outbound agent connection. Persist tasks,
+  receipts and audit records, prevent duplicate/incompatible updates and overlap
+  with container operations, preserve uncertain outcomes and confirm success only
+  from a fresh target-binary sample. Transfers require verified HTTPS except for
+  local loopback development; downloads accept no custom URL, shell or SSH data.
+  Verify bounded size, digest, ELF architecture and build information before
+  atomic replacement. The stable supervisor restores a verified old executable
+  after startup failure or a two-minute confirmation timeout. Heartbeats continue
+  during package transfers; identities and operator settings remain in SQLite.
+- `deploy/install.sh`, `deploy/system-monitor-agent.service`: bootstrap a fixed
+  supervisor with a dedicated writable managed-binary directory under the existing
+  agent directory. Preserve the data directory and systemd restrictions. Existing
+  agents require this one-time manual bootstrap before the update button works.
+- `Dockerfile`, `.github/workflows/ci.yml`, `scripts/image-check.sh`: package both
+  Linux architectures in hub images, inject the commit revision, verify packaged
+  artifacts and require a native root-isolated self-update/rollback test in CI.
+- `web/app.js`, `web/app.css`: version comparison, explicit update confirmation,
+  disabled/legacy/offline states, update progress and durable results in server
+  details/settings, using existing authentication, icons and responsive layouts.
+- `agent_update_test.go`, `agent_update_linux_test.go`,
+  `testdata/agent-update-crash/main.go`, `scripts/browser-check.cjs`: cover access
+  control, target pinning, cross-server isolation, non-replay, expiry/cancellation,
+  actual executable replacement, corrupt downloads, startup rollback, identity
+  preservation and browser update/receipt flows with isolated test fixtures.
+- `README.md`, `deploy/README.md`: document one-time bootstrap, normal web updates,
+  package/platform behavior, recovery and independent hub/agent lifecycles.
+
+Verification passed: Windows Go tests/vet and JavaScript syntax checks; Linux
+AMD64 test compilation and the complete suite in isolated WSL Ubuntu as root,
+including actual updates, corrupt-transfer rejection, startup-crash rollback and
+confirmation-timeout rollback; Linux ARM64 cross-build; real hub/API/browser
+acceptance of update confirmation, authenticated package checksum, durable success,
+viewer restrictions and all nine settings groups at 1440/1060/390/320 px.
+Desktop and 320 px update screenshots were inspected. Actionlint, Linux shell
+syntax and whitespace checks passed. Local Docker and Linux race runs were not
+available; the existing native image/Compose checks and added root-isolated race
+integration remain publication gates in GitHub CI.
+
+Use the user's earlier GitHub-submission authorization for the completed feature
+and existing image-publication workflow. Verify CI and registry results after
+pushing. This does not authorize production deployment or the one-time bootstrap
+on the user's server. Preserve the unrelated local deployment ledger entry.

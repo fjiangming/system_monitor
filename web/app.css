@@ -110,6 +110,16 @@ button:hover:not(:disabled) {
   height: 17px;
   flex-shrink: 0;
 }
+.agent-version-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.agent-version-grid > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 button svg {
   pointer-events: none;
 }

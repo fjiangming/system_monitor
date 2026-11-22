@@ -16,13 +16,14 @@ import (
 var webFiles embed.FS
 
 type hubAPI struct {
-	s     *Store
-	apply chan struct{}
-	slots chan struct{}
+	s         *Store
+	apply     chan struct{}
+	slots     chan struct{}
+	artifacts *agentArtifacts
 }
 
 func newHubAPI(s *Store, apply chan struct{}) http.Handler {
-	return &hubAPI{s: s, apply: apply, slots: make(chan struct{}, 16)}
+	return &hubAPI{s: s, apply: apply, slots: make(chan struct{}, 16), artifacts: defaultAgentArtifacts()}
 }
 
 func (h *hubAPI) authenticate(w http.ResponseWriter, r *http.Request, c Config) {
@@ -196,6 +197,8 @@ func (h *hubAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "/api/state" && r.Method == "GET" {
 		servers := h.s.Servers()
 		for i := range servers {
+			h.s.confirmAgentUpdate(servers[i])
+			servers[i].AgentUpdate = h.s.agentUpdateView(servers[i], h.artifacts)
 			rows, e := h.s.DB.Query(`SELECT result FROM check_results WHERE server_id=?`, servers[i].ID)
 			if e == nil {
 				for rows.Next() {
@@ -229,6 +232,15 @@ func (h *hubAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			j.Logs = ""
 		}
 		respond(w, 200, j)
+		return
+	}
+	if path == "/api/agent-update" && r.Method == "GET" {
+		u, e := h.s.AgentUpdate(r.URL.Query().Get("id"))
+		if e != nil {
+			fail(404, errors.New("更新任务不存在"))
+			return
+		}
+		respond(w, 200, u)
 		return
 	}
 	if user.Role != "admin" {
@@ -337,6 +349,7 @@ func (h *hubAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = h.s.DB.Exec(`UPDATE servers SET token_hash='',enroll_hash='',enroll_expires=0,last_seen=0 WHERE id=?`, b.ID)
 		_, _ = h.s.DB.Exec(`UPDATE jobs SET state='cancelled',result='探针凭据已撤销' WHERE server_id=? AND state='queued'`, b.ID)
+		_, _ = h.s.DB.Exec(`UPDATE agent_updates SET state='cancelled',result='探针凭据已撤销',updated=? WHERE server_id=? AND state='queued'`, unixNow(), b.ID)
 		h.s.Event(b.ID, "security", "warning", "撤销探针凭据", "在途操作需人工核对结果", user.Username)
 	case "/api/server/delete":
 		var b struct {
@@ -371,6 +384,22 @@ func (h *hubAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = h.s.DB.Exec(`UPDATE servers SET maintenance=? WHERE id=?`, until, b.ID)
 		h.s.Event(b.ID, "maintenance", "info", "调整维护窗口", "", user.Username)
+	case "/api/server/agent-update":
+		var b struct {
+			ID     string `json:"id"`
+			SHA256 string `json:"sha256"`
+		}
+		if e := decodeRequest(w, r, &b); e != nil {
+			bad(e)
+			return
+		}
+		u, e := h.s.CreateAgentUpdate(b.ID, b.SHA256, user.Username, h.artifacts)
+		if e != nil {
+			bad(e)
+			return
+		}
+		respond(w, 202, u)
+		return
 	case "/api/job/create":
 		var b struct {
 			ServerID     string `json:"serverID"`
@@ -436,7 +465,7 @@ func (h *hubAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.s.Event("", "storage", "success", "监控数据备份完成", "数据库和密钥已保存至数据目录 backups", user.Username)
 	case "/api/runtime/apply":
 		var active int
-		_ = h.s.DB.QueryRow(`SELECT count(*) FROM jobs WHERE state IN ('queued','leased') AND deadline>?`, unixNow()).Scan(&active)
+		_ = h.s.DB.QueryRow(`SELECT (SELECT count(*) FROM jobs WHERE state IN ('queued','leased') AND deadline>?) + (SELECT count(*) FROM agent_updates WHERE state IN ('queued','downloading','restarting') AND deadline>?)`, unixNow(), unixNow()).Scan(&active)
 		if active > 0 {
 			bad(errors.New("请等待容器操作完成后再应用服务设置"))
 			return
@@ -480,9 +509,10 @@ func (h *hubAPI) agent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b struct {
-		ID       string    `json:"id"`
-		Snapshot *Snapshot `json:"snapshot,omitempty"`
-		Job      Job       `json:"job,omitempty"`
+		ID       string       `json:"id"`
+		Snapshot *Snapshot    `json:"snapshot,omitempty"`
+		Job      Job          `json:"job,omitempty"`
+		Update   *AgentUpdate `json:"update,omitempty"`
 	}
 	if decodeRequest(w, r, &b) != nil {
 		bad(400, "请求无效")
@@ -504,13 +534,34 @@ func (h *hubAPI) agent(w http.ResponseWriter, r *http.Request) {
 			bad(404, "服务器不存在")
 			return
 		}
-		j, e := h.s.Lease(b.ID)
+		h.s.confirmAgentUpdate(v)
+		u, e := h.s.LeaseAgentUpdate(b.ID)
+		if e != nil {
+			bad(503, "探针更新队列不可用")
+			return
+		}
+		var j *Job
+		if u == nil {
+			j, e = h.s.Lease(b.ID)
+		}
 		if e != nil {
 			bad(503, "操作队列不可用")
 			return
 		}
 		c, _ := h.s.Config()
-		respond(w, 200, agentReply{Config: v.Config, Access: c.Access, Job: j, Timezone: c.Service.Timezone})
+		respond(w, 200, agentReply{Config: v.Config, Access: c.Access, Job: j, Timezone: c.Service.Timezone, Update: u})
+	case "/api/agent/update-download":
+		if b.Update == nil {
+			bad(400, "更新任务无效")
+			return
+		}
+		h.serveAgentArtifact(w, r, b.ID, b.Update.ID)
+	case "/api/agent/update-status":
+		if b.Update == nil || h.s.ReportAgentUpdate(b.ID, *b.Update) != nil {
+			bad(400, "更新回执无效")
+			return
+		}
+		respond(w, 200, map[string]bool{"ok": true})
 	case "/api/agent/result":
 		if e := h.s.Complete(b.ID, b.Job); e != nil {
 			bad(400, "操作回执无效")

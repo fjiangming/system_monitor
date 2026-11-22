@@ -28,6 +28,7 @@ func diskFree(path string) (uint64, error) {
 }
 func (p *collector) collect(ctx context.Context, c ServerConfig) Snapshot {
 	s := Snapshot{OS: "linux", Cores: runtime.NumCPU(), AgentVersion: version, At: unixNow(), Containers: []Container{}, Disks: []Disk{}, Units: []Unit{}, Checks: []CheckResult{}, Errors: []string{}}
+	s.Agent = currentAgentInfo()
 	s.Hostname, _ = os.Hostname()
 	var networkErr error
 	s.Network, networkErr = p.network.collect(c)
