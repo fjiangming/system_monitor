@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-type collector struct{ total, idle uint64 }
+type collector struct {
+	total, idle uint64
+	network     networkSampler
+}
 
 func diskFree(path string) (uint64, error) {
 	var st syscall.Statfs_t
@@ -26,6 +29,11 @@ func diskFree(path string) (uint64, error) {
 func (p *collector) collect(ctx context.Context, c ServerConfig) Snapshot {
 	s := Snapshot{OS: "linux", Cores: runtime.NumCPU(), AgentVersion: version, At: unixNow(), Containers: []Container{}, Disks: []Disk{}, Units: []Unit{}, Checks: []CheckResult{}, Errors: []string{}}
 	s.Hostname, _ = os.Hostname()
+	var networkErr error
+	s.Network, networkErr = p.network.collect(c)
+	if networkErr != nil {
+		s.Errors = append(s.Errors, networkErr.Error())
+	}
 	b, e := os.ReadFile("/proc/stat")
 	if e == nil {
 		fields := strings.Fields(strings.SplitN(string(b), "\n", 2)[0])

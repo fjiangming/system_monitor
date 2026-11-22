@@ -170,6 +170,9 @@ func TestLinuxCollectorAndUnixDocker(t *testing.T) {
 	if second.CPU < 0 || second.CPU > 100 {
 		t.Fatal("CPU outside range")
 	}
+	if _, ready := networkTotals(second.Network); !ready || len(first.Network) == 0 || first.Network[0].Ready {
+		t.Fatalf("invalid Linux network samples: first=%+v second=%+v", first.Network, second.Network)
+	}
 }
 func TestRealDockerRestartAndLogs(t *testing.T) {
 	if os.Getenv("SYSTEM_MONITOR_DOCKER_TEST") != "1" {

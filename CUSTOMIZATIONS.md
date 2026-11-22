@@ -194,3 +194,102 @@ fixture then hit Docker's requirement that a static endpoint IP needs explicit
 IPAM. The test now recreates its own empty network with the same automatically
 selected subnet declared explicitly before reserving the old address. Production
 network creation is unchanged; failed checks prevented image publication.
+
+## 2026-11-22: Network traffic monitoring and anomaly notifications
+
+Authorized scope: add traffic observations and configurable notifications for
+possible DDoS or bandwidth anomalies. No server deployment, firewall changes,
+Cloudflare account changes or business-application modifications are included.
+
+- `model.go`, `network.go`, `network_linux.go`, `collector_linux.go`: per-server,
+  database-managed interface selection, inbound/outbound Mbps and inbound packet
+  thresholds, and a separate sustained period. Read Linux counters directly;
+  auto-select and deduplicate IPv4/IPv6 default-route interfaces. Calculate rates
+  with monotonic elapsed time, rebaseline on counter resets, interface identity
+  changes and collection gaps, and bound selected/reported interfaces and rates.
+  Thresholds default to disabled; existing server records retain their settings.
+- `monitor.go`: reuse new-observation failure counting and existing durable
+  notifications, acknowledgment, maintenance, repetition and recovery for traffic
+  anomalies. Missing/partial rates interrupt pending traffic thresholds, retain
+  active alerts without claiming recovery, and raise an availability warning
+  when thresholds are enabled but traffic data remains unavailable.
+- `store.go`: add a backward-compatible network history table attached to the
+  existing samples with cascading retention, transactional writes, nullable old
+  or unknown rates, and validation of agent traffic observations.
+- `web/app.js`, `web/app.css`: add per-server traffic settings, overview speeds,
+  detailed rates and interface drop/error rates, and receive/transmit trends with
+  unknown samples shown as gaps. Reload trends when returning to server details
+  from settings. Use the existing responsive UI and icons.
+- `network_test.go`, `integration_linux_test.go`, `scripts/browser-check.cjs`:
+  cover parsing, routing, rate calculation, resets, interface replacement/gaps,
+  legacy settings/database upgrade, history retention, threshold duration and
+  deduplication, missing-data behavior, notification queue integration, and real
+  hub/browser configuration, charts and responsive layouts.
+- `README.md`: document measurements, threshold tuning, paired hub/agent
+  upgrades, detection latency, external availability checks and upstream DDoS
+  protection. Monitoring does not itself mitigate or identify an attack.
+
+Verification passed: Windows `go vet ./...`, `go test -count=1 ./...`, JavaScript
+syntax checks, Linux AMD64 test-binary compilation and the complete test suite
+executed in local WSL Ubuntu (including real Linux network counters and Unix
+Socket agent integration), Linux ARM64 cross-build, and real hub/browser
+acceptance of traffic configuration propagation, known/unknown history, chart
+reloads and all nine settings groups at 1440/1060/390/320 px. Desktop traffic and
+mobile traffic/settings screenshots were visually inspected. The opt-in real
+Docker restart test was not enabled; no Docker behavior changes are included.
+Whitespace checks passed. No production service or external protection settings
+were changed, and no deployment or publication was performed.
+
+## 2026-11-22: Automatic traffic baselines without operator thresholds
+
+Authorized scope: replace manual traffic thresholds with automatic learning and
+anomaly notifications so operators need not estimate bandwidth or packet rates.
+This supersedes the manual-threshold behavior in the preceding traffic entry.
+No deployment or changes to business applications or external defenses are run.
+
+- `model.go`, `web/app.js`, `web/app.css`: enable automatic detection by default,
+  remove numeric traffic settings, retain an on/off control and optional interface
+  selection, and show learning progress and analysis state with normal reference
+  rates. Existing server records inherit automatic mode without editing settings.
+- `network_auto.go`, `monitor.go`, `store.go`: learn a robust range from accepted
+  observations of the same interface set, with a minimum of 30 observations over
+  30 minutes and a bounded 24-hour reference. Combine median, upper percentile,
+  MAD and idle-host noise floors. Require three new high observations over at
+  least 60 seconds, use hysteresis for recovery, and persist frozen incident
+  references so sustained anomalies cannot train themselves into normality.
+  Separate learning markers cascade with existing history retention. Maintenance
+  does not train the baseline; configured, observed backup activity suppresses
+  only a new outbound anomaly, while inbound and existing anomalies remain checked.
+  Unknown rates preserve active incidents and interrupt pending alerts. Existing
+  notification, acknowledgment, maintenance and recovery semantics are reused.
+- `network_auto_test.go`, `network_test.go`, `scripts/browser-check.cjs`: verify
+  learning, noise floors, isolated spikes, hysteresis, backup handling, duplicate
+  observations, notification/recovery, interface changes, unknown samples,
+  maintenance exclusions and a persistent incident after history expiry/restart.
+  Browser checks verify default automatic mode, no numeric traffic inputs,
+  configuration propagation, on/off behavior and actual learning status.
+- `README.md`: replace threshold-tuning instructions with automatic behavior,
+  learning time, algorithm details and limitations, including initial learning
+  during an attack and legitimate large changes in demand. Notification channel
+  credentials and the notification switch still need the operator's selection.
+
+Verification passed: Windows `go test -count=1 ./...`, `go vet ./...`, JavaScript
+syntax checks, Linux AMD64 test compilation and the complete test suite in WSL
+Ubuntu, and Linux ARM64 cross-build. Real hub/browser acceptance passed automatic
+defaults, learning status, absence of numeric traffic inputs, saved on/off and
+interface configuration, charts and all nine settings groups at four widths.
+Desktop monitoring and mobile automatic-settings screenshots were visually
+inspected. Whitespace checks passed. The opt-in real Docker test was not run;
+Docker behavior was not changed. No publication or deployment was performed.
+
+## 2026-11-22: Publish automatic traffic monitoring to GitHub
+
+The user explicitly requested a GitHub submission. Commit and push the complete
+traffic collection, automatic baselines, notifications, responsive UI, tests and
+documentation to the repository's existing `main` branch. Preserve the unrelated
+pre-existing local server-deployment ledger entry without including it in this
+feature commit. The local verification recorded above applies to this source.
+The existing GitHub workflow verifies Linux race/real-Docker/browser behavior,
+platform builds and native images before publishing AMD64/ARM64 GHCR images.
+Verify its result after pushing. No production server deployment is authorized
+or performed by this publication request.

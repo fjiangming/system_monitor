@@ -50,6 +50,7 @@ const app = {
 const categories = [
   ["servers", "server", "服务器与探针"],
   ["targets", "container", "监控对象"],
+  ["network", "network", "流量监控"],
   ["alerts", "bell", "告警规则"],
   ["backup", "database-backup", "备份检查"],
   ["notifications", "send", "通知渠道"],
@@ -103,6 +104,62 @@ function bytes(n) {
   if (n >= 2 ** 30) return (n / 2 ** 30).toFixed(1) + " GiB";
   if (n >= 2 ** 20) return (n / 2 ** 20).toFixed(0) + " MiB";
   return n + " B";
+}
+function mbps(rate) {
+  return rate == null ? "—" : (rate * 8 / 1e6).toFixed(2) + " Mbps";
+}
+function networkTotal(s) {
+  const interfaces = s.snapshot.network || [];
+  if (!fresh(s) || !interfaces.length || interfaces.some((n) => !n.ready))
+    return null;
+  return interfaces.reduce(
+    (total, n) => ({
+      receive: total.receive + n.receiveBytesPerSecond,
+      transmit: total.transmit + n.transmitBytesPerSecond,
+      receivePPS: total.receivePPS + n.receivePacketsPerSecond,
+      transmitPPS: total.transmitPPS + n.transmitPacketsPerSecond,
+    }),
+    { receive: 0, transmit: 0, receivePPS: 0, transmitPPS: 0 },
+  );
+}
+function networkStrip(s) {
+  const n = networkTotal(s);
+  return `<div class="network-strip"><span>${icon("arrow-down")}入站 ${mbps(n?.receive)}</span><span>${icon("arrow-up")}出站 ${mbps(n?.transmit)}</span></div>`;
+}
+function automaticNetworkStatus(s) {
+  if (!s?.config.enabled) return badge("监测已暂停");
+  if (!s?.config.network.automatic) return badge("自动识别已关闭");
+  if (!fresh(s) || !networkTotal(s)) return badge("暂不可判断", "warn");
+  const status = s.networkStatus || {};
+  if (!status.state || status.at < s.sampleAt) return badge("分析中");
+  if (status.state === "learning")
+    return badge("学习中 · " + status.progress + "%", "info");
+  if (status.state === "elevated") return badge("流量偏高", "warn");
+  return status.state === "normal" ? badge("自动监测中", "good") : badge("暂不可判断", "warn");
+}
+function networkView(s) {
+  const total = networkTotal(s);
+  const interfaces = s.snapshot.network || [];
+  const rows = interfaces.map((n) => {
+    const ready = fresh(s) && n.ready;
+    return `<tr><td class="mono">${esc(n.name)}</td>
+      <td>${ready ? mbps(n.receiveBytesPerSecond) + " / " + mbps(n.transmitBytesPerSecond) : "速率未知"}</td>
+      <td>${ready ? n.receiveDroppedPerSecond.toFixed(1) + " / " + n.transmitDroppedPerSecond.toFixed(1) : "—"}</td>
+      <td>${ready ? n.receiveErrorsPerSecond.toFixed(1) + " / " + n.transmitErrorsPerSecond.toFixed(1) : "—"}</td></tr>`;
+  }).join("");
+  return `<section class="section" aria-label="流量监控">
+    <div class="section-title"><h2>网络流量</h2><span class="small muted">${esc(interfaces.map((n) => n.name).join(" · ") || "尚无网卡采样")}</span></div>
+    <div class="health-strip">${automaticNetworkStatus(s)}${s.networkStatus?.progress === 100 ? `<span>平时入站 ${mbps(s.networkStatus.baseline.receive)} · 出站 ${mbps(s.networkStatus.baseline.transmit)}</span>` : ""}</div>
+    <div class="detail-grid network-summary">
+      <div><span class="small muted">入站</span><strong>${mbps(total?.receive)}</strong></div>
+      <div><span class="small muted">出站</span><strong>${mbps(total?.transmit)}</strong></div>
+      <div><span class="small muted">入站包速率</span><strong>${total ? total.receivePPS.toFixed(0) + " 包/秒" : "—"}</strong></div>
+      <div><span class="small muted">出站包速率</span><strong>${total ? total.transmitPPS.toFixed(0) + " 包/秒" : "—"}</strong></div>
+    </div>
+    <div class="network-legend small muted"><span class="receive">入站</span><span class="transmit">出站</span><span id="network-scale"></span></div>
+    <div class="trend network-trend" id="network-trend" aria-label="最近入站与出站流量趋势"></div>
+    ${interfaces.length ? `<div class="table-scroll"><table class="network-table"><thead><tr><th>网卡</th><th>入站 / 出站</th><th>丢包（收 / 发，包/秒）</th><th>错误（收 / 发，包/秒）</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="sub">尚无流量采样</p>'}
+  </section>`;
 }
 function age(at) {
   if (!at) return "尚未接入";
@@ -218,6 +275,7 @@ function render() {
         el.setSelectionRange(selection, selection);
     }
   }
+  if (app.detail && app.view === "monitor") loadTrend();
 }
 function renderAuth() {
   const proxyFields = app.setup
@@ -266,7 +324,7 @@ function serverCard(s) {
   const running =
     snap.containers?.filter((c) => c.state === "running").length || 0;
   const errors = app.state.alerts.filter((a) => a.serverID === s.id).length;
-  return `<article class="server-card"><div class="card-top"><div><button class="server-name" data-action="detail" data-id="${esc(s.id)}">${esc(s.config.name)}</button><p class="sub">${esc(s.config.region || snap.hostname || "—")} · ${esc(s.config.address || snap.os || "等待接入")}</p></div>${badge(s.config.enabled ? (s.online ? "在线" : "离线") : "已停用", s.config.enabled ? (s.online ? "good" : "bad") : "")}</div><div class="metrics">${metric("CPU", valid ? snap.cpu : null)}${metric("内存", valid ? mem : null, valid ? `${bytes(snap.memoryUsed)} / ${bytes(snap.memoryTotal)}` : "—")}${metric(disk ? "磁盘 " + disk.path : "磁盘", valid && disk ? (1 - disk.free / disk.total) * 100 : null, valid && disk ? `可用 ${bytes(disk.free)}` : "—")}${metric("容器", null, valid ? running + " / " + count + " 运行" : "状态未知")}</div><div class="card-bottom"><span class="small muted">${esc(age(s.lastSeen))}${s.maintenanceUntil > app.state.now ? " · 维护中" : ""}</span><div class="controls">${errors ? badge(errors + " 项告警", "bad") : ""}${button("detail", "arrow-up-right", "查看详情", `data-id="${esc(s.id)}"`)}</div></div></article>`;
+  return `<article class="server-card"><div class="card-top"><div><button class="server-name" data-action="detail" data-id="${esc(s.id)}">${esc(s.config.name)}</button><p class="sub">${esc(s.config.region || snap.hostname || "—")} · ${esc(s.config.address || snap.os || "等待接入")}</p></div>${badge(s.config.enabled ? (s.online ? "在线" : "离线") : "已停用", s.config.enabled ? (s.online ? "good" : "bad") : "")}</div><div class="metrics">${metric("CPU", valid ? snap.cpu : null)}${metric("内存", valid ? mem : null, valid ? `${bytes(snap.memoryUsed)} / ${bytes(snap.memoryTotal)}` : "—")}${metric(disk ? "磁盘 " + disk.path : "磁盘", valid && disk ? (1 - disk.free / disk.total) * 100 : null, valid && disk ? `可用 ${bytes(disk.free)}` : "—")}${metric("容器", null, valid ? running + " / " + count + " 运行" : "状态未知")}</div>${networkStrip(s)}<div class="card-bottom"><span class="small muted">${esc(age(s.lastSeen))}${s.maintenanceUntil > app.state.now ? " · 维护中" : ""}</span><div class="controls">${errors ? badge(errors + " 项告警", "bad") : ""}${button("detail", "arrow-up-right", "查看详情", `data-id="${esc(s.id)}"`)}</div></div></article>`;
 }
 function alertRow(a) {
   const s = app.state.servers.find((x) => x.id === a.serverID);
@@ -285,7 +343,7 @@ function detailView() {
       .filter((a) => a.serverID === s.id)
       .map(alertRow)
       .join("") || '<p class="sub">暂无告警</p>'
-  }</section>`;
+  }</section>${networkView(s)}`;
 }
 function containerTable(s, settings = false) {
   const list = s.snapshot.containers || [];
@@ -350,6 +408,9 @@ const schemas = {
     ["monitorNew", "新发现容器自动纳入监控", "check"],
     ["disks", "磁盘路径（每行一个）", "textarea"],
     ["units", "systemd 服务（每行一个）", "textarea"],
+  ],
+  network: [
+    ["network.automatic", "自动识别流量异常", "check"],
   ],
   alerts: [
     ["alerts.interval", "巡检间隔（秒）", "number", 10, 300],
@@ -473,13 +534,17 @@ function secretField(key, label, multiline = false) {
 function settingsView() {
   if (!app.settings) return '<div class="loading">正在读取设置…</div>';
   const category = categories.find((x) => x[0] === app.category);
-  const serverCategory = ["servers", "targets", "backup"].includes(
+  const serverCategory = ["servers", "targets", "network", "backup"].includes(
     app.category,
   );
   return `<div class="heading"><div><h1>系统设置</h1><p class="sub">${esc(app.settings.applyStatus || "全部设置保存在监控服务数据库")}</p></div></div><div class="settings-layout"><aside class="settings-side" aria-label="设置分类">${categories.map(([id, i, name]) => `<button data-action="category" data-category="${id}" class="${app.category === id ? "selected" : ""}">${icon(i)}${name}</button>`).join("")}</aside><div class="settings-content"><select id="category-select" class="category-mobile" aria-label="设置分类">${categories.map(([id, , name]) => `<option value="${id}" ${app.category === id ? "selected" : ""}>${name}</option>`).join("")}</select><div class="section-title"><h2>${category[2]}</h2>${serverCategory ? button("add-server", "plus", "添加服务器") : ""}</div>${serverCategory ? `<div class="inline-form"><label><span>服务器</span><select id="settings-server">${!app.serverID ? '<option value="">新服务器</option>' : ""}${app.state.servers.map((s) => `<option value="${esc(s.id)}" ${s.id === app.serverID ? "selected" : ""}>${esc(s.config.name)}</option>`).join("")}</select></label>${app.serverID ? button("enrollment", "link", "接入探针") : ""}</div>` : ""}<form id="settings-form" data-scope="${serverCategory ? "server" : "global"}"><div class="form-grid">${fields(schemas[app.category], serverCategory ? app.server : app.draft)}</div>${settingsExtra()}<div class="form-actions"><button class="primary" type="submit">${icon("save")}保存设置</button>${["service", "storage"].includes(app.category) ? button("apply", "check-check", "应用服务设置") : ""}${app.category === "notifications" ? button("test-notification", "send", "发送测试通知") : ""}<span class="small muted" id="dirty-status">${app.globalDirty || app.serverDirty ? "有未保存修改" : ""}</span></div></form>${app.category === "access" ? usersView() : ""}</div></div>`;
 }
 function settingsExtra() {
   const cat = app.category;
+  if (cat === "network") {
+    const s = app.state.servers.find((x) => x.id === app.serverID);
+    return `<div class="form-section"><h3>监测状态</h3>${s ? automaticNetworkStatus(s) : badge("等待探针接入")}<details class="network-options"><summary>网卡选择（可选）</summary><div class="form-grid">${fields([["network.interfaces", "网卡（每行一个，留空自动选择）", "textarea"]], app.server)}</div></details></div>`;
+  }
   if (cat === "servers")
     return `<div class="form-section"><h3>探针状态</h3><p class="small muted">${app.serverID ? esc(age(app.state.servers.find((s) => s.id === app.serverID)?.lastSeen)) : "尚未创建服务器"}</p>${app.serverID ? `<div class="form-actions">${button("revoke", "key-round", "撤销探针凭据")}${button("delete-server", "trash-2", "移除服务器")}</div>` : ""}</div>`;
   if (cat === "targets") {
@@ -661,20 +726,34 @@ async function refresh() {
     if (id) selectServer(id);
   }
   render();
-  if (app.detail && app.view === "monitor") loadTrend();
 }
 async function loadTrend() {
   try {
-    const data = await api("history?id=" + encodeURIComponent(app.detail));
+    const serverID = app.detail;
+    const data = await api("history?id=" + encodeURIComponent(serverID));
+    if (app.detail !== serverID || app.view !== "monitor") return;
+    data.reverse();
     const el = $("#trend");
     if (el)
       el.innerHTML = data
-        .reverse()
         .map(
           (x) =>
             `<i style="--height:${Math.max(2, Math.min(100, x.cpu))}%" title="${esc(time(x.at))} · CPU ${Number(x.cpu).toFixed(1)}%"></i>`,
         )
         .join("");
+    const network = $("#network-trend");
+    if (network) {
+      const valid = data.filter((x) => x.receiveBytesPerSecond != null);
+      const peak = Math.max(0, ...valid.flatMap((x) => [x.receiveBytesPerSecond, x.transmitBytesPerSecond]));
+      const scale = Math.max(1, peak);
+      $("#network-scale").textContent = valid.length ? "峰值 " + mbps(peak) : "尚无有效流量采样";
+      network.innerHTML = data.map((x) => {
+        if (x.receiveBytesPerSecond == null)
+          return `<span class="network-sample missing" title="${esc(time(x.at))} · 速率未知"></span>`;
+        const title = `${time(x.at)} · 入站 ${mbps(x.receiveBytesPerSecond)} · 出站 ${mbps(x.transmitBytesPerSecond)} · 入站 ${x.receivePacketsPerSecond.toFixed(0)} 包/秒`;
+        return `<span class="network-sample" title="${esc(title)}"><i class="receive" style="--height:${Math.max(1, x.receiveBytesPerSecond / scale * 100)}%"></i><i class="transmit" style="--height:${Math.max(1, x.transmitBytesPerSecond / scale * 100)}%"></i></span>`;
+      }).join("");
+    }
   } catch {}
 }
 async function action(el) {
@@ -718,7 +797,6 @@ async function action(el) {
       app.detail = el.dataset.id;
       app.view = "monitor";
       render();
-      loadTrend();
       break;
     case "back":
       app.detail = "";
@@ -1022,7 +1100,6 @@ setInterval(async () => {
     await loadState();
     if (app.view !== "settings") {
       render();
-      if (app.detail) loadTrend();
     }
   } catch (e) {
     message(e.message, true);

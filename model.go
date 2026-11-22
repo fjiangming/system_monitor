@@ -116,6 +116,10 @@ type BackupConfig struct {
 	MaxAgeHours    int    `json:"maxAgeHours"`
 	RequireHealthy bool   `json:"requireHealthy"`
 }
+type NetworkConfig struct {
+	Interfaces string `json:"interfaces"`
+	Automatic  bool   `json:"automatic"`
+}
 type ServerConfig struct {
 	Name             string                   `json:"name"`
 	Region           string                   `json:"region"`
@@ -134,16 +138,18 @@ type ServerConfig struct {
 	Containers       map[string]ContainerRule `json:"containers"`
 	Checks           []HTTPCheck              `json:"checks"`
 	Backup           BackupConfig             `json:"backup"`
+	Network          NetworkConfig            `json:"network"`
 }
 type Server struct {
-	ID               string       `json:"id"`
-	Config           ServerConfig `json:"config"`
-	Revision         int64        `json:"revision"`
-	LastSeen         int64        `json:"lastSeen"`
-	SampleAt         int64        `json:"sampleAt"`
-	Online           bool         `json:"online"`
-	MaintenanceUntil int64        `json:"maintenanceUntil"`
-	Snapshot         Snapshot     `json:"snapshot"`
+	ID               string        `json:"id"`
+	Config           ServerConfig  `json:"config"`
+	Revision         int64         `json:"revision"`
+	LastSeen         int64         `json:"lastSeen"`
+	SampleAt         int64         `json:"sampleAt"`
+	Online           bool          `json:"online"`
+	MaintenanceUntil int64         `json:"maintenanceUntil"`
+	Snapshot         Snapshot      `json:"snapshot"`
+	NetworkStatus    NetworkStatus `json:"networkStatus"`
 }
 type Container struct {
 	ID        string `json:"id"`
@@ -183,22 +189,35 @@ type BackupResult struct {
 	ServicesHealthy bool   `json:"servicesHealthy"`
 	Error           string `json:"error"`
 }
+type NetworkInterface struct {
+	Name                     string  `json:"name"`
+	Ready                    bool    `json:"ready"`
+	ReceiveBytesPerSecond    float64 `json:"receiveBytesPerSecond"`
+	TransmitBytesPerSecond   float64 `json:"transmitBytesPerSecond"`
+	ReceivePacketsPerSecond  float64 `json:"receivePacketsPerSecond"`
+	TransmitPacketsPerSecond float64 `json:"transmitPacketsPerSecond"`
+	ReceiveDroppedPerSecond  float64 `json:"receiveDroppedPerSecond"`
+	TransmitDroppedPerSecond float64 `json:"transmitDroppedPerSecond"`
+	ReceiveErrorsPerSecond   float64 `json:"receiveErrorsPerSecond"`
+	TransmitErrorsPerSecond  float64 `json:"transmitErrorsPerSecond"`
+}
 type Snapshot struct {
-	Hostname     string        `json:"hostname"`
-	OS           string        `json:"os"`
-	Cores        int           `json:"cores"`
-	CPU          float64       `json:"cpu"`
-	MemoryTotal  uint64        `json:"memoryTotal"`
-	MemoryUsed   uint64        `json:"memoryUsed"`
-	Uptime       int64         `json:"uptime"`
-	Disks        []Disk        `json:"disks"`
-	Containers   []Container   `json:"containers"`
-	Units        []Unit        `json:"units"`
-	Checks       []CheckResult `json:"checks"`
-	Backup       BackupResult  `json:"backup"`
-	Errors       []string      `json:"errors"`
-	At           int64         `json:"at"`
-	AgentVersion string        `json:"agentVersion"`
+	Hostname     string             `json:"hostname"`
+	OS           string             `json:"os"`
+	Cores        int                `json:"cores"`
+	CPU          float64            `json:"cpu"`
+	MemoryTotal  uint64             `json:"memoryTotal"`
+	MemoryUsed   uint64             `json:"memoryUsed"`
+	Uptime       int64              `json:"uptime"`
+	Disks        []Disk             `json:"disks"`
+	Network      []NetworkInterface `json:"network"`
+	Containers   []Container        `json:"containers"`
+	Units        []Unit             `json:"units"`
+	Checks       []CheckResult      `json:"checks"`
+	Backup       BackupResult       `json:"backup"`
+	Errors       []string           `json:"errors"`
+	At           int64              `json:"at"`
+	AgentVersion string             `json:"agentVersion"`
 }
 type Job struct {
 	ID            string `json:"id"`
@@ -253,7 +272,7 @@ func defaultConfig(root string) Config {
 	}
 }
 func defaultServer() ServerConfig {
-	return ServerConfig{Enabled: true, Heartbeat: 30, HeartbeatTimeout: 90, CommandPoll: 3, VerifyTLS: true, DockerSocket: "/var/run/docker.sock", AutoDiscover: true, Disks: "/", Containers: map[string]ContainerRule{}, Checks: []HTTPCheck{}, Backup: BackupConfig{Start: "03:00", Deadline: "04:00", MaxMinutes: 30, MaxAgeHours: 26, RequireHealthy: true}}
+	return ServerConfig{Enabled: true, Heartbeat: 30, HeartbeatTimeout: 90, CommandPoll: 3, VerifyTLS: true, DockerSocket: "/var/run/docker.sock", AutoDiscover: true, Disks: "/", Containers: map[string]ContainerRule{}, Checks: []HTTPCheck{}, Backup: BackupConfig{Start: "03:00", Deadline: "04:00", MaxMinutes: 30, MaxAgeHours: 26, RequireHealthy: true}, Network: NetworkConfig{Automatic: true}}
 }
 func bounds(label string, value, min, max int) error {
 	if value < min || value > max {
@@ -351,6 +370,7 @@ func (c Config) Validate() error {
 
 var unitPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.@:-]{0,180}\.service$`)
 var containerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+var interfaceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
 
 func (s ServerConfig) Validate() error {
 	if strings.TrimSpace(s.Name) == "" || len(s.Name) > 128 || len(s.Region) > 128 || len(s.Address) > 256 {
@@ -364,6 +384,16 @@ func (s ServerConfig) Validate() error {
 	}
 	if !validHTTP(s.Proxy, true) {
 		return fmt.Errorf("出站代理地址无效")
+	}
+	if len(s.Network.Interfaces) > 512 || len(lines(s.Network.Interfaces)) > 16 {
+		return fmt.Errorf("最多选择 16 张网卡")
+	}
+	interfaces := map[string]bool{}
+	for _, name := range lines(s.Network.Interfaces) {
+		if !interfaceNamePattern.MatchString(name) || interfaces[name] {
+			return fmt.Errorf("网卡名称无效或重复")
+		}
+		interfaces[name] = true
 	}
 	if len(lines(s.Disks)) > 12 || len(lines(s.Units)) > 24 || len(s.Checks) > 24 || len(s.Containers) > 500 {
 		return fmt.Errorf("监控对象超过单服务器限制")

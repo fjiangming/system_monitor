@@ -373,6 +373,76 @@ main {
   gap: 12px;
   margin: 18px 0;
 }
+.network-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.network-strip span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.detail-grid.network-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.network-summary strong {
+  overflow-wrap: anywhere;
+}
+.network-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 14px;
+}
+.network-legend .receive {
+  color: var(--blue);
+}
+.network-legend .transmit {
+  color: var(--amber);
+}
+.trend.network-trend {
+  height: 100px;
+  padding-top: 8px;
+  margin-bottom: 14px;
+}
+.network-sample {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 100%;
+  flex: 1;
+  min-width: 0;
+}
+.network-sample i {
+  min-width: 0;
+  opacity: 0.8;
+}
+.network-sample .receive {
+  background: var(--blue);
+}
+.network-sample .transmit {
+  background: var(--amber);
+}
+.network-sample.missing {
+  height: 2px;
+  background: var(--line);
+}
+.network-table {
+  min-width: 680px;
+}
+.network-options {
+  margin-top: 20px;
+}
+.network-options summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
 .metric .value {
   display: flex;
   justify-content: space-between;
@@ -793,7 +863,8 @@ code {
     max-width: 100px;
     white-space: normal;
   }
-  .detail-grid {
+  .detail-grid,
+  .detail-grid.network-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

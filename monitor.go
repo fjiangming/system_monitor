@@ -73,6 +73,7 @@ func (s *Store) inspectServer(ctx context.Context, v Server, c Config) {
 		mem = float64(snap.MemoryUsed) / float64(snap.MemoryTotal) * 100
 	}
 	observe("memory", "warning", "内存持续偏高", fmt.Sprintf("%.1f%%", mem), mem >= float64(c.Alerts.Memory), at, c.Alerts.Failures, c.Alerts.Sustained)
+	s.inspectNetwork(v, c, seen)
 	for _, d := range snap.Disks {
 		gib := float64(d.Free) / (1 << 30)
 		level := "warning"
@@ -192,6 +193,76 @@ func (s *Store) inspectServer(ctx context.Context, v Server, c Config) {
 	}
 	for _, k := range obsolete {
 		_, _ = s.DB.Exec(`DELETE FROM alerts WHERE k=?`, k)
+	}
+}
+
+func (s *Store) inspectNetwork(v Server, c Config, seen map[string]bool) {
+	n := v.Config.Network
+	if !n.Automatic {
+		return
+	}
+	previous := s.previousNetworkStatus(v.ID)
+	total, ready := networkTotals(v.Snapshot.Network)
+	selected := lines(n.Interfaces)
+	if len(selected) > 0 {
+		names := map[string]bool{}
+		for _, iface := range v.Snapshot.Network {
+			names[iface.Name] = true
+		}
+		for _, name := range selected {
+			ready = ready && names[name]
+		}
+		ready = ready && len(names) == len(selected)
+	}
+	seen[v.ID+":network:unavailable"] = true
+	s.observe(v, "network:unavailable", "warning", "流量采样不可用", "尚无完整网卡速率，请检查网卡选择及探针版本", !ready, v.SampleAt, networkAutoFailures, 0, c)
+	status := previous
+	analysisFailed := false
+	status.At = v.SampleAt
+	status.State = "unknown"
+	if ready {
+		signature := networkSignature(v.Snapshot.Network)
+		if !previous.Frozen || previous.Interfaces != signature {
+			samples, e := s.networkReference(v.ID, signature, v.SampleAt)
+			if e == nil {
+				status = automaticNetworkBaseline(samples)
+			} else {
+				ready = false
+				analysisFailed = true
+			}
+		} else {
+			status.State = "normal"
+		}
+		status.Interfaces, status.At = signature, v.SampleAt
+		if ready && status.State != "learning" {
+			status = assessNetwork(status, previous, total, v.Config.Backup.Enabled && v.Snapshot.Backup.Running)
+		}
+	}
+	if e := s.saveNetworkStatus(v, status, ready && !status.Frozen, total); e != nil {
+		ready = false
+		analysisFailed = true
+	}
+	seen[v.ID+":network:analysis"] = true
+	s.observe(v, "network:analysis", "warning", "流量自动分析不可用", "请检查监控数据存储和历史采样", analysisFailed, v.SampleAt, networkAutoFailures, 0, c)
+	detect := ready && status.State != "learning"
+	names := strings.ReplaceAll(status.Interfaces, "\n", "、")
+	for _, rule := range []struct {
+		key, title, unit string
+		value, baseline  float64
+	}{
+		{"receive", "入站流量持续异常", "Mbps", total.ReceiveBytesPerSecond * 8 / 1e6, status.Baseline.Receive * 8 / 1e6},
+		{"transmit", "出站流量持续异常", "Mbps", total.TransmitBytesPerSecond * 8 / 1e6, status.Baseline.Transmit * 8 / 1e6},
+		{"packets", "入站包速率持续异常", "包/秒", total.ReceivePacketsPerSecond, status.Baseline.Packets},
+	} {
+		key := "network:" + rule.key
+		seen[v.ID+":"+key] = true
+		if !detect {
+			// Unknown rates interrupt a pending threshold but cannot establish recovery.
+			_, _ = s.DB.Exec(`DELETE FROM alerts WHERE k=? AND active=0`, v.ID+":"+key)
+			continue
+		}
+		detail := fmt.Sprintf("%s：当前 %.2f %s，平时约 %.2f %s；自动识别为持续偏高，请核查业务请求与网络状态", names, rule.value, rule.unit, rule.baseline, rule.unit)
+		s.observe(v, key, "warning", rule.title, detail, networkWasElevated(status, rule.key), v.SampleAt, networkAutoFailures, networkAutoSustained, c)
 	}
 }
 

@@ -194,6 +194,13 @@ async function check() {
     disks: [
       { path: "/", total: 214748364800, free: 107374182400, inodeFree: 88 },
     ],
+    network: [{
+      name: "eth0", ready: true,
+      receiveBytesPerSecond: 1250000, transmitBytesPerSecond: 250000,
+      receivePacketsPerSecond: 4000, transmitPacketsPerSecond: 500,
+      receiveDroppedPerSecond: 2, transmitDroppedPerSecond: 0,
+      receiveErrorsPerSecond: 0, transmitErrorsPerSecond: 0,
+    }],
     containers: [
       {
         id: webID,
@@ -230,17 +237,37 @@ async function check() {
     at: 0,
     agentVersion: "test-agent",
   };
+  await agent("poll", { id, snapshot: { ...snapshot, network: [{ name: "eth0", ready: false }] } }, identity.token);
   await agent("poll", { id, snapshot }, identity.token);
   await page.locator("[data-action=nav][data-view=monitor]").click();
   await page.locator("[data-action=refresh]").click();
   await page.locator("[data-action=detail]").first().click();
   await page.getByRole("heading", { name: "容器", exact: true }).waitFor();
+  await page.locator("#network-trend .network-sample:not(.missing)").waitFor();
+  assert.equal(await page.locator(".network-summary").getByText("10.00 Mbps", { exact: true }).count(), 1);
+  assert.equal(await page.locator("#network-trend .missing").count(), 1);
+  assert.ok((await page.locator("#network-trend .network-sample:not(.missing)").getAttribute("title")).includes("4000 包/秒"));
+  await page.locator('[aria-label="流量监控"]').getByText(/^学习中/).waitFor();
   await overflow(page);
   await page.screenshot({
     path: path.join(artifacts, "desktop-monitor.png"),
     fullPage: true,
   });
   await page.locator("[data-action=edit-server]").click();
+  await category(page, "network");
+  assert.equal(await page.locator("#f-network-automatic").isChecked(), true);
+  assert.equal(await page.locator("#settings-form input[type=number]").count(), 0);
+  await page.locator(".network-options summary").click();
+  await page.locator("#f-network-interfaces").fill("eth0");
+  await page.locator("#settings-form [type=submit]").click();
+  const networkConfig = (await agent("poll", { id }, identity.token)).config.network;
+  assert.deepEqual(networkConfig, { interfaces: "eth0", automatic: true });
+  await page.locator("#f-network-automatic").uncheck();
+  await page.locator("#settings-form [type=submit]").click();
+  assert.equal((await agent("poll", { id }, identity.token)).config.network.automatic, false);
+  await page.locator("#f-network-automatic").check();
+  await page.locator("#settings-form [type=submit]").click();
+  await category(page, "targets");
   await page
     .getByRole("checkbox", { name: "web monitor", exact: true })
     .check();
@@ -325,6 +352,7 @@ async function check() {
   const categories = [
     "servers",
     "targets",
+    "network",
     "alerts",
     "backup",
     "notifications",
@@ -343,7 +371,15 @@ async function check() {
       path: path.join(artifacts, "settings-" + width + ".png"),
       fullPage: true,
     });
+    await category(page, "network");
+    assert.equal(await page.locator("#f-network-automatic").isChecked(), true);
+    assert.equal(await page.locator("#settings-form input[type=number]").count(), 0);
+    await page.screenshot({
+      path: path.join(artifacts, "network-settings-" + width + ".png"),
+      fullPage: true,
+    });
     await page.locator("[data-action=nav][data-view=monitor]").click();
+    await page.locator("#network-trend .network-sample:not(.missing)").waitFor();
     await overflow(page);
     await page.screenshot({
       path: path.join(artifacts, "monitor-" + width + ".png"),
@@ -419,7 +455,7 @@ async function check() {
   });
   assert.deepEqual(errors, [], "browser runtime errors");
   console.log(
-    "Browser checks passed: setup, real API enrollment, permissions, restart receipts, database confirmation, notification, accounts, 8 settings groups at 4 widths, port apply, data migration and restart.",
+    "Browser checks passed: setup, real API enrollment, permissions, restart receipts, database confirmation, notification, accounts, traffic settings and charts, 9 settings groups at 4 widths, port apply, data migration and restart.",
   );
 }
 check()

@@ -96,6 +96,9 @@ CREATE INDEX IF NOT EXISTS events_at ON events(at);
 CREATE TABLE IF NOT EXISTS alerts(k TEXT PRIMARY KEY,server_id TEXT NOT NULL,level TEXT NOT NULL,title TEXT NOT NULL,detail TEXT NOT NULL,since INTEGER NOT NULL,last_bad INTEGER NOT NULL,bad_count INTEGER NOT NULL,active INTEGER NOT NULL,acknowledged INTEGER NOT NULL DEFAULT 0,last_notice INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT,server_id TEXT NOT NULL,at INTEGER NOT NULL,cpu REAL NOT NULL,memory REAL NOT NULL,restarts TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS history_server ON history(server_id,at);
+CREATE TABLE IF NOT EXISTS network_history(sample_id INTEGER PRIMARY KEY REFERENCES history(id) ON DELETE CASCADE,receive REAL NOT NULL,transmit REAL NOT NULL,packets REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS network_learning(sample_id INTEGER PRIMARY KEY REFERENCES network_history(sample_id) ON DELETE CASCADE,interfaces TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS network_status(server_id TEXT PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,status TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS check_results(server_id TEXT NOT NULL,id TEXT NOT NULL,result TEXT NOT NULL,PRIMARY KEY(server_id,id));
 CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY AUTOINCREMENT,message TEXT NOT NULL,revision INTEGER NOT NULL,due INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',lease INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS agent_jobs(id TEXT PRIMARY KEY,state TEXT NOT NULL,result TEXT NOT NULL);
@@ -356,17 +359,19 @@ func (s *Store) SetupCode() string {
 }
 func (s *Store) Servers() []Server {
 	out := []Server{}
-	rows, e := s.DB.Query(`SELECT id,config,revision,last_seen,sample_at,snapshot,maintenance FROM servers ORDER BY id`)
+	rows, e := s.DB.Query(`SELECT s.id,s.config,s.revision,s.last_seen,s.sample_at,s.snapshot,s.maintenance,COALESCE(n.status,'{}') FROM servers s LEFT JOIN network_status n ON n.server_id=s.id ORDER BY s.id`)
 	if e != nil {
 		return out
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var v Server
-		var c, snap string
-		if rows.Scan(&v.ID, &c, &v.Revision, &v.LastSeen, &v.SampleAt, &snap, &v.MaintenanceUntil) == nil {
+		v.Config = defaultServer()
+		var c, snap, network string
+		if rows.Scan(&v.ID, &c, &v.Revision, &v.LastSeen, &v.SampleAt, &snap, &v.MaintenanceUntil, &network) == nil {
 			_ = json.Unmarshal([]byte(c), &v.Config)
 			_ = json.Unmarshal([]byte(snap), &v.Snapshot)
+			_ = json.Unmarshal([]byte(network), &v.NetworkStatus)
 			v.Online = v.LastSeen > unixNow()-int64(v.Config.HeartbeatTimeout)
 			out = append(out, v)
 		}
@@ -449,6 +454,9 @@ func (s *Store) SaveSample(id string, snapshot *Snapshot) error {
 	if len(snapshot.Containers) > 500 || len(snapshot.Disks) > 12 || len(snapshot.Units) > 24 || len(snapshot.Checks) > 24 {
 		return errors.New("sample too large")
 	}
+	if !validNetworkSample(snapshot.Network) {
+		return errors.New("invalid network sample")
+	}
 	snapshot.At = unixNow()
 	snapshot.AgentVersion = strings.TrimSpace(snapshot.AgentVersion)
 	restarts := map[string]int{}
@@ -474,8 +482,18 @@ func (s *Store) SaveSample(id string, snapshot *Snapshot) error {
 	if freeErr == nil && free < uint64(c.Storage.MinFree)*(1<<30) {
 		return tx.Commit()
 	}
-	if _, e = tx.Exec(`INSERT INTO history(server_id,at,cpu,memory,restarts) VALUES(?,?,?,?,?)`, id, snapshot.At, snapshot.CPU, memory, encode(restarts)); e != nil {
+	row, e := tx.Exec(`INSERT INTO history(server_id,at,cpu,memory,restarts) VALUES(?,?,?,?,?)`, id, snapshot.At, snapshot.CPU, memory, encode(restarts))
+	if e != nil {
 		return e
+	}
+	if network, ready := networkTotals(snapshot.Network); ready {
+		sampleID, err := row.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if _, e = tx.Exec(`INSERT INTO network_history(sample_id,receive,transmit,packets) VALUES(?,?,?,?)`, sampleID, network.ReceiveBytesPerSecond, network.TransmitBytesPerSecond, network.ReceivePacketsPerSecond); e != nil {
+			return e
+		}
 	}
 	return tx.Commit()
 }
@@ -650,7 +668,7 @@ func (s *Store) SnapshotTo(destination string) error {
 }
 func (s *Store) History(id string) []map[string]any {
 	out := []map[string]any{}
-	rows, e := s.DB.Query(`SELECT at,cpu,memory FROM history WHERE server_id=? ORDER BY at DESC LIMIT 120`, id)
+	rows, e := s.DB.Query(`SELECT h.at,h.cpu,h.memory,n.receive,n.transmit,n.packets FROM history h LEFT JOIN network_history n ON n.sample_id=h.id WHERE h.server_id=? ORDER BY h.at DESC,h.id DESC LIMIT 120`, id)
 	if e != nil {
 		return out
 	}
@@ -658,8 +676,13 @@ func (s *Store) History(id string) []map[string]any {
 	for rows.Next() {
 		var at int64
 		var cpu, mem float64
-		if rows.Scan(&at, &cpu, &mem) == nil {
-			out = append(out, map[string]any{"at": at, "cpu": cpu, "memory": mem})
+		var receive, transmit, packets sql.NullFloat64
+		if rows.Scan(&at, &cpu, &mem, &receive, &transmit, &packets) == nil {
+			v := map[string]any{"at": at, "cpu": cpu, "memory": mem, "receiveBytesPerSecond": nil, "transmitBytesPerSecond": nil, "receivePacketsPerSecond": nil}
+			if receive.Valid && transmit.Valid && packets.Valid {
+				v["receiveBytesPerSecond"], v["transmitBytesPerSecond"], v["receivePacketsPerSecond"] = receive.Float64, transmit.Float64, packets.Float64
+			}
+			out = append(out, v)
 		}
 	}
 	return out
