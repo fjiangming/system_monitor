@@ -218,6 +218,13 @@ async function check() {
         startedAt: new Date().toISOString(),
         restarts: 0,
         database: false,
+        cpuPercent: 12.5,
+        cpuReady: true,
+        memoryUsage: 536870912,
+        memoryLimit: 2147483648,
+        memoryPercent: 25,
+        memoryHostPercent: 6.25,
+        memoryReady: true,
       },
       {
         id: dbID,
@@ -228,6 +235,13 @@ async function check() {
         startedAt: new Date().toISOString(),
         restarts: 1,
         database: true,
+        cpuPercent: 7.5,
+        cpuReady: true,
+        memoryUsage: 751619276,
+        memoryLimit: 2147483648,
+        memoryPercent: 35,
+        memoryHostPercent: 8.75,
+        memoryReady: true,
       },
     ],
     units: [],
@@ -250,6 +264,10 @@ async function check() {
   await page.locator("[data-action=refresh]").click();
   await page.locator("[data-action=detail]").first().click();
   await page.getByRole("heading", { name: "容器", exact: true }).waitFor();
+  await page.getByRole("columnheader", { name: "CPU（整机）", exact: true }).waitFor();
+  await page.getByText("容器合计（整机口径）CPU 20.0% · 内存 15.0%", { exact: true }).waitFor();
+  assert.equal(await page.getByText("12.5%", { exact: true }).count(), 1);
+  assert.equal(await page.getByText("限额 25.0% · 整机 6.3%", { exact: true }).count(), 1);
   await page.locator("#network-trend .network-sample:not(.missing)").first().waitFor();
   assert.equal(await page.locator(".network-summary").getByText("10.00 Mbps", { exact: true }).count(), 1);
   assert.equal(await page.locator("#network-trend .missing").count(), 1);

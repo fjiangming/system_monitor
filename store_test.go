@@ -71,6 +71,19 @@ func TestConfigurationValidation(t *testing.T) {
 		t.Fatal("accepted invalid network")
 	}
 }
+
+func TestSaveSampleRejectsInvalidContainerResourcePercentages(t *testing.T) {
+	s := testStore(t)
+	id := testServer(t, s)
+	v, err := s.Server(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.Snapshot.Containers[0].CPUPercent = 101
+	if err := s.SaveSample(id, &v.Snapshot); err == nil || err.Error() != "invalid container sample" {
+		t.Fatalf("invalid container resource was accepted: %v", err)
+	}
+}
 func TestMissingOrMismatchedIdentityKey(t *testing.T) {
 	root := t.TempDir()
 	s, e := openStore(root)

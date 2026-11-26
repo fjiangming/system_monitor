@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -155,14 +156,21 @@ type Server struct {
 	AgentUpdate      AgentUpdateView `json:"agentUpdate"`
 }
 type Container struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Image     string `json:"image"`
-	State     string `json:"state"`
-	Health    string `json:"health"`
-	StartedAt string `json:"startedAt"`
-	Restarts  int    `json:"restarts"`
-	Database  bool   `json:"database"`
+	ID                string  `json:"id"`
+	Name              string  `json:"name"`
+	Image             string  `json:"image"`
+	State             string  `json:"state"`
+	Health            string  `json:"health"`
+	StartedAt         string  `json:"startedAt"`
+	Restarts          int     `json:"restarts"`
+	Database          bool    `json:"database"`
+	CPUPercent        float64 `json:"cpuPercent"`
+	CPUReady          bool    `json:"cpuReady"`
+	MemoryUsage       uint64  `json:"memoryUsage"`
+	MemoryLimit       uint64  `json:"memoryLimit"`
+	MemoryPercent     float64 `json:"memoryPercent"`
+	MemoryHostPercent float64 `json:"memoryHostPercent"`
+	MemoryReady       bool    `json:"memoryReady"`
 }
 type Disk struct {
 	Path      string  `json:"path"`
@@ -375,6 +383,15 @@ func (c Config) Validate() error {
 var unitPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.@:-]{0,180}\.service$`)
 var containerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var interfaceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
+
+func validContainerSample(c Container) bool {
+	for _, value := range []float64{c.CPUPercent, c.MemoryPercent, c.MemoryHostPercent} {
+		if value < 0 || value > 100 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return false
+		}
+	}
+	return true
+}
 
 func (s ServerConfig) Validate() error {
 	if strings.TrimSpace(s.Name) == "" || len(s.Name) > 128 || len(s.Region) > 128 || len(s.Address) > 256 {

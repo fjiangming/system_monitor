@@ -195,6 +195,66 @@ IPAM. The test now recreates its own empty network with the same automatically
 selected subnet declared explicitly before reserving the old address. Production
 network creation is unchanged; failed checks prevented image publication.
 
+## 2026-11-21: Authorized server deployment for sysmonitor.yunhop.cc
+
+The user explicitly authorized deployment on their server under
+`~/system-monitor`, pulling images with Compose and reusing the existing Nginx.
+No source checkout, additional Nginx container or business-service restart is
+part of this deployment. SSH credentials were used interactively and are not
+stored in project or deployment files.
+
+- `/root/system-monitor/compose.yaml`: exported the deploy package from the
+  published image, then adapted its hub service for the actual host Nginx with
+  the single loopback binding `127.0.0.1:18080:18080`. Preserve the image's
+  non-root UID/GID 10001, read-only root filesystem, dropped capabilities,
+  bounded temporary storage/logs and health check. Created only the dedicated
+  `system-monitor-proxy` network and external `system-monitor-data` volume.
+  The unmodified packaged manifest is retained as `compose.image-example.yaml`.
+- `/etc/nginx/conf.d/sysmonitor.conf` and
+  `/etc/nginx/snippets/sysmonitor-proxy.conf`: add only the requested domain.
+  Inspection established that the public proxy is the existing host systemd
+  Nginx; the Nginx inside another application is unrelated. Reuse the existing
+  wildcard Cloudflare Origin CA certificate and TLS snippet on port 8443,
+  validate Host/SNI, replace forwarding headers, and omit query strings and
+  request bodies from access logs. Keep existing TLS defaults and port 443
+  ownership intact. Validate configuration before graceful reload.
+- The observed Cloudflare routing for this new hostname currently uses HTTP
+  origin port 80. The HTTP vhost accepts HTTPS edge requests only when the
+  actual connection peer is in Cloudflare's published ranges, using
+  `$realip_remote_addr` so global real-IP rewriting cannot confuse the check.
+  Other HTTP requests redirect to the HTTPS domain. The origin TLS vhost is
+  ready for a domain-scoped Cloudflare Full (strict), port 8443 rule; this
+  deployment does not claim encrypted Cloudflare-to-origin traffic or change
+  Cloudflare account rules. Copies of both new active Nginx files and the
+  initial redirect-only vhost are retained in the deployment directory.
+- `/root/system-monitor/SERVER-OPERATIONS.md`: document the actual topology,
+  initialization URL and trusted gateway `172.22.0.1`, source-free updates,
+  data/key backups, scoped encrypted-origin configuration, status/log checks
+  and subsequent native-agent enrollment. No administrator account was created
+  and no host agent was enrolled; first-run credentials remain user-selected.
+  Deployment staging and one-off browser smoke files live only in ignored
+  `artifacts/remote-deploy/`; no application source or packaged defaults change.
+
+The server anonymously pulled index
+`sha256:9f13ee1d6057a1ba8e3fb5e85493de7d6c3dc2eb5cfd0e053c7836dbb44f5bd7`,
+with revision `99061a928b88d253f9555361b4bed2380f2c2636`. Compose reports the
+hub healthy. Verified the actual external data mount, UID/GID, read-only root,
+capability removal and loopback-only publication. Forced hub replacement and
+verified the persistent identity key did not change and the public domain
+continued to serve the initialization API without reloading Nginx.
+
+Public HTTPS returns the real initialization page and healthy endpoint with
+normal TLS verification; HTTP redirects to HTTPS. A connection from outside
+the server to its IP on port 18080 fails. Forged Cloudflare/forwarding headers
+on a direct HTTP connection still redirect, and wrong Host or unknown TLS SNI
+does not reach the monitor. Desktop 1440 px and mobile 390 px browser smoke
+checks passed, including the actual proxy hint and no horizontal overflow;
+screenshots were visually inspected. Cloudflare's injected analytics beacon
+is blocked by the existing CSP; no application assets or browser execution
+failed, and the CSP was retained. Existing business container health/status
+and the public main domain plus two origin virtual-host responses matched
+their pre-deployment baseline. Final Nginx syntax and public health checks pass.
+
 ## 2026-11-22: Network traffic monitoring and anomaly notifications
 
 Authorized scope: add traffic observations and configurable notifications for
@@ -346,3 +406,34 @@ Use the user's earlier GitHub-submission authorization for the completed feature
 and existing image-publication workflow. Verify CI and registry results after
 pushing. This does not authorize production deployment or the one-time bootstrap
 on the user's server. Preserve the unrelated local deployment ledger entry.
+
+## 2026-11-26: Add per-container CPU and memory sampling
+
+The user requested resource usage in the per-container monitoring table and a
+clear comparison with host totals. This change is source-only; it does not
+authorize publishing an image or updating the production monitor.
+
+- `docker.go`, `collector_linux.go`: query Docker's one-shot `stats` endpoint
+  over the existing Unix socket for running containers. Keep CPU counters in
+  the native agent collector so CPU rates are calculated across consecutive
+  samples. CPU is normalized against total host CPU capacity (all host cores
+  equal 100%). Memory reports a cache-adjusted working set, the container
+  cgroup limit, the percentage of that limit, and the percentage of host
+  physical memory. A missing or first sample remains explicitly unavailable.
+- `model.go`, `store.go`: extend the authenticated snapshot schema with the
+  resource fields and reject non-finite or out-of-range percentages at the hub.
+  Existing agents and snapshots remain compatible; they show unavailable
+  resource values until the agent is updated.
+- `web/app.js`, `web/app.css`: show CPU and memory usage for each container, plus a valid
+  sampled-container total using the host-relative CPU and host-memory
+  percentages. Explain in the table summary that host processes, kernel memory,
+  shared pages and containers without a valid sample are outside that total.
+- `docker_test.go`, `store_test.go`, `scripts/browser-check.cjs`: cover Docker one-shot stats,
+  CPU counter deltas, cache-adjusted memory, counter resets, first-sample
+  behavior and the browser table/aggregate display.
+
+The displayed container totals are comparable to host percentages but are not
+expected to equal them. Host CPU and memory also include non-container host
+work, kernel work, Docker overhead, page cache and shared memory; CPU and
+memory sampling windows can differ. Container memory percentages are limit-based
+and therefore must never be summed as a host percentage.

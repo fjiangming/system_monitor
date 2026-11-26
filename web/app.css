@@ -444,6 +444,22 @@ main {
 .network-table {
   min-width: 680px;
 }
+.container-resource-table {
+  min-width: 900px;
+}
+.container-resource-table th:nth-child(2),
+.container-resource-table td:nth-child(2) {
+  min-width: 86px;
+  white-space: nowrap;
+}
+.container-resource-table th:nth-child(3),
+.container-resource-table td:nth-child(3) {
+  min-width: 80px;
+}
+.container-resource-table th:nth-child(4),
+.container-resource-table td:nth-child(4) {
+  min-width: 190px;
+}
 .network-options {
   margin-top: 20px;
 }

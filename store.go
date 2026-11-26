@@ -457,6 +457,11 @@ func (s *Store) SaveSample(id string, snapshot *Snapshot) error {
 	if len(snapshot.Containers) > 500 || len(snapshot.Disks) > 12 || len(snapshot.Units) > 24 || len(snapshot.Checks) > 24 {
 		return errors.New("sample too large")
 	}
+	for _, container := range snapshot.Containers {
+		if !validContainerSample(container) {
+			return errors.New("invalid container sample")
+		}
+	}
 	if !validNetworkSample(snapshot.Network) {
 		return errors.New("invalid network sample")
 	}

@@ -17,8 +17,9 @@ import (
 )
 
 type collector struct {
-	total, idle uint64
-	network     networkSampler
+	total, idle  uint64
+	network      networkSampler
+	containerCPU map[string]dockerCPUStats
 }
 
 func diskFree(path string) (uint64, error) {
@@ -93,9 +94,13 @@ func (p *collector) collect(ctx context.Context, c ServerConfig) Snapshot {
 	}
 	d := newDocker(c.DockerSocket)
 	defer d.client.CloseIdleConnections()
-	s.Containers, e = d.containers(ctx, c)
+	var nextContainerCPU map[string]dockerCPUStats
+	s.Containers, nextContainerCPU, e = d.containers(ctx, c, s.MemoryTotal, p.containerCPU)
 	if e != nil {
+		p.containerCPU = nil
 		s.Errors = append(s.Errors, "Docker 采集失败")
+	} else {
+		p.containerCPU = nextContainerCPU
 	}
 	for _, u := range lines(c.Units) {
 		v, err := readUnit(ctx, u)

@@ -71,6 +71,39 @@ type dockerInspect struct {
 	}
 }
 
+type dockerCPUStats struct {
+	totalUsage  uint64
+	systemUsage uint64
+}
+
+type dockerStats struct {
+	CPUStats struct {
+		CPUUsage struct {
+			TotalUsage uint64 `json:"total_usage"`
+		} `json:"cpu_usage"`
+		SystemCPUUsage uint64 `json:"system_cpu_usage"`
+	} `json:"cpu_stats"`
+	MemoryStats struct {
+		Usage uint64 `json:"usage"`
+		Limit uint64 `json:"limit"`
+		Stats struct {
+			Cache        uint64 `json:"cache"`
+			InactiveFile uint64 `json:"inactive_file"`
+		} `json:"stats"`
+	} `json:"memory_stats"`
+}
+
+type containerResourceMetrics struct {
+	cpuPercent        float64
+	cpuReady          bool
+	memoryUsage       uint64
+	memoryLimit       uint64
+	memoryPercent     float64
+	memoryHostPercent float64
+	memoryReady       bool
+	cpuStats          dockerCPUStats
+}
+
 var containerIDPattern = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
 
 func (d *dockerClient) inspect(ctx context.Context, id string) (dockerInspect, error) {
@@ -84,6 +117,61 @@ func (d *dockerClient) inspect(ctx context.Context, id string) (dockerInspect, e
 	}
 	return v, e
 }
+func (d *dockerClient) stats(ctx context.Context, id string) (dockerStats, error) {
+	var v dockerStats
+	if !containerIDPattern.MatchString(id) {
+		return v, errors.New("invalid container id")
+	}
+	b, e := d.request(ctx, "GET", "/containers/"+id+"/stats?stream=false", 2<<20)
+	if e == nil {
+		e = json.Unmarshal(b, &v)
+	}
+	return v, e
+}
+
+func dockerMemoryUsage(stats dockerStats) uint64 {
+	reclaimable := stats.MemoryStats.Stats.Cache
+	if reclaimable == 0 {
+		reclaimable = stats.MemoryStats.Stats.InactiveFile
+	}
+	if stats.MemoryStats.Usage <= reclaimable {
+		return 0
+	}
+	return stats.MemoryStats.Usage - reclaimable
+}
+
+func containerMetrics(current dockerStats, previous dockerCPUStats, hasPrevious bool, hostMemoryTotal uint64) containerResourceMetrics {
+	metrics := containerResourceMetrics{cpuStats: dockerCPUStats{
+		totalUsage:  current.CPUStats.CPUUsage.TotalUsage,
+		systemUsage: current.CPUStats.SystemCPUUsage,
+	}}
+	if hasPrevious && metrics.cpuStats.totalUsage > previous.totalUsage && metrics.cpuStats.systemUsage > previous.systemUsage {
+		cpuDelta := metrics.cpuStats.totalUsage - previous.totalUsage
+		systemDelta := metrics.cpuStats.systemUsage - previous.systemUsage
+		metrics.cpuPercent = float64(cpuDelta) / float64(systemDelta) * 100
+		metrics.cpuReady = metrics.cpuPercent >= 0 && metrics.cpuPercent <= 100
+		if !metrics.cpuReady {
+			metrics.cpuPercent = 0
+		}
+	}
+	metrics.memoryUsage = dockerMemoryUsage(current)
+	metrics.memoryLimit = current.MemoryStats.Limit
+	if metrics.memoryLimit > 0 {
+		metrics.memoryPercent = float64(metrics.memoryUsage) / float64(metrics.memoryLimit) * 100
+		metrics.memoryReady = metrics.memoryPercent >= 0 && metrics.memoryPercent <= 100
+		if !metrics.memoryReady {
+			metrics.memoryPercent = 0
+		}
+	}
+	if hostMemoryTotal > 0 {
+		metrics.memoryHostPercent = float64(metrics.memoryUsage) / float64(hostMemoryTotal) * 100
+		if metrics.memoryHostPercent < 0 || metrics.memoryHostPercent > 100 {
+			metrics.memoryHostPercent = 0
+		}
+	}
+	return metrics
+}
+
 func isDatabase(name, image string) bool {
 	s := strings.ToLower(name + " " + image)
 	for _, k := range []string{"postgres", "mysql", "mariadb", "mongodb", "redis", "clickhouse", "mssql"} {
@@ -93,22 +181,23 @@ func isDatabase(name, image string) bool {
 	}
 	return false
 }
-func (d *dockerClient) containers(ctx context.Context, c ServerConfig) ([]Container, error) {
+func (d *dockerClient) containers(ctx context.Context, c ServerConfig, hostMemoryTotal uint64, previous map[string]dockerCPUStats) ([]Container, map[string]dockerCPUStats, error) {
 	b, e := d.request(ctx, "GET", "/containers/json?all=1&limit=501", 4<<20)
 	if e != nil {
-		return nil, e
+		return nil, map[string]dockerCPUStats{}, e
 	}
 	var list []struct {
 		ID    string `json:"Id"`
 		Names []string
 	}
 	if e = json.Unmarshal(b, &list); e != nil {
-		return nil, e
+		return nil, map[string]dockerCPUStats{}, e
 	}
 	if len(list) > 500 {
-		return nil, errors.New("超过 500 个容器，请拆分监控范围")
+		return nil, map[string]dockerCPUStats{}, errors.New("超过 500 个容器，请拆分监控范围")
 	}
 	out := []Container{}
+	nextCPU := map[string]dockerCPUStats{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
@@ -129,7 +218,7 @@ func (d *dockerClient) containers(ctx context.Context, c ServerConfig) ([]Contai
 		case sem <- struct{}{}:
 		case <-ctx.Done():
 			wg.Wait()
-			return out, ctx.Err()
+			return out, nextCPU, ctx.Err()
 		}
 		wg.Add(1)
 		go func(id string) {
@@ -149,13 +238,28 @@ func (d *dockerClient) containers(ctx context.Context, c ServerConfig) ([]Contai
 			if item.State.Health != nil {
 				v.Health = item.State.Health.Status
 			}
+			if item.State.Running {
+				if stats, statsErr := d.stats(ctx, item.ID); statsErr == nil {
+					metrics := containerMetrics(stats, previous[item.ID], previous[item.ID] != (dockerCPUStats{}), hostMemoryTotal)
+					v.CPUPercent = metrics.cpuPercent
+					v.CPUReady = metrics.cpuReady
+					v.MemoryUsage = metrics.memoryUsage
+					v.MemoryLimit = metrics.memoryLimit
+					v.MemoryPercent = metrics.memoryPercent
+					v.MemoryHostPercent = metrics.memoryHostPercent
+					v.MemoryReady = metrics.memoryReady
+					mu.Lock()
+					nextCPU[item.ID] = metrics.cpuStats
+					mu.Unlock()
+				}
+			}
 			mu.Lock()
 			out = append(out, v)
 			mu.Unlock()
 		}(v.ID)
 	}
 	wg.Wait()
-	return out, firstError
+	return out, nextCPU, firstError
 }
 func runHTTP(ctx context.Context, c HTTPCheck, proxy string) CheckResult {
 	result := CheckResult{ID: c.ID, Name: c.Name, At: unixNow()}

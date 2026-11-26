@@ -14,6 +14,69 @@ import (
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestContainerMetricsUseHostRelativeCPUAndWorkingSetMemory(t *testing.T) {
+	var current dockerStats
+	current.CPUStats.CPUUsage.TotalUsage = 300
+	current.CPUStats.SystemCPUUsage = 4000
+	current.MemoryStats.Usage = 350
+	current.MemoryStats.Limit = 1000
+	current.MemoryStats.Stats.Cache = 50
+	got := containerMetrics(current, dockerCPUStats{totalUsage: 100, systemUsage: 2000}, true, 2000)
+	if !got.cpuReady || got.cpuPercent != 10 {
+		t.Fatalf("unexpected host-relative CPU: %+v", got)
+	}
+	if !got.memoryReady || got.memoryUsage != 300 || got.memoryLimit != 1000 || got.memoryPercent != 30 || got.memoryHostPercent != 15 {
+		t.Fatalf("unexpected memory metrics: %+v", got)
+	}
+
+	first := containerMetrics(current, dockerCPUStats{}, false, 2000)
+	if first.cpuReady || !first.memoryReady {
+		t.Fatalf("first sample should only lack a CPU rate: %+v", first)
+	}
+	reset := current
+	reset.CPUStats.CPUUsage.TotalUsage = 10
+	reset.CPUStats.SystemCPUUsage = 20
+	if metrics := containerMetrics(reset, got.cpuStats, true, 2000); metrics.cpuReady {
+		t.Fatal("counter reset reported a CPU rate")
+	}
+}
+
+func TestDockerStatsUsesOneShotEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/containers/"+testContainerID+"/stats" || r.URL.Query().Get("stream") != "false" {
+			http.NotFound(w, r)
+			return
+		}
+		respond(w, 200, map[string]any{
+			"cpu_stats": map[string]any{
+				"cpu_usage":        map[string]uint64{"total_usage": 123},
+				"system_cpu_usage": uint64(456),
+			},
+			"memory_stats": map[string]any{
+				"usage": uint64(700), "limit": uint64(1000),
+				"stats": map[string]uint64{"inactive_file": 100},
+			},
+		})
+	}))
+	defer server.Close()
+	client := server.Client()
+	transport := client.Transport
+	client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		r.URL.Scheme = "http"
+		r.URL.Host = strings.TrimPrefix(server.URL, "http://")
+		return transport.RoundTrip(r)
+	})
+	d := &dockerClient{client: client}
+	got, err := d.stats(context.Background(), testContainerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CPUStats.CPUUsage.TotalUsage != 123 || got.CPUStats.SystemCPUUsage != 456 || got.MemoryStats.Stats.InactiveFile != 100 {
+		t.Fatalf("unexpected Docker stats: %+v", got)
+	}
+}
+
 func fakeDocker(t *testing.T, health string, restartCode int, mismatch bool) (*dockerClient, *atomic.Int32) {
 	t.Helper()
 	count := &atomic.Int32{}
